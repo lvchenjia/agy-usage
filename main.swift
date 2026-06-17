@@ -305,11 +305,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.imagePosition = .noImage
         }
         
-        // Determine title — keep it standard monochrome (labelColor)
+        // Determine title — let the system manage the text color dynamically
+        // (so it automatically dims to gray when the screen/window loses focus)
         if showPercentage {
             let titleString = currentPercentageText
             let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.labelColor,
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 .baselineOffset: -1.0
             ]

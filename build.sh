@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-DIR="/Users/horse/Desktop/agy-status"
+DIR="/Users/horse/Desktop/agy-usage"
 
 echo "Cleaning up old build..."
 rm -rf "$DIR/AgyUsage" "$DIR/Agy Usage.app"
