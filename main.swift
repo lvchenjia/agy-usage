@@ -64,6 +64,7 @@ class ProgressBarView: NSView {
 }
 
 class QuotaMenuItemView: NSView {
+    private let logoImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let percentageLabel = NSTextField(labelWithString: "")
     private let progressBar = ProgressBarView()
@@ -79,6 +80,25 @@ class QuotaMenuItemView: NSView {
     }
     
     private func setupViews(title: String, fraction: Double, resetText: String) {
+        // Setup logo image view
+        logoImageView.translatesAutoresizingMaskIntoConstraints = false
+        logoImageView.imageScaling = .scaleProportionallyUpOrDown
+        
+        let imageName: String
+        if title.localizedCaseInsensitiveContains("Gemini") {
+            imageName = "gemini"
+        } else if title.localizedCaseInsensitiveContains("Claude") {
+            imageName = "claude"
+        } else {
+            imageName = ""
+        }
+        
+        if !imageName.isEmpty, let image = NSImage(named: imageName) {
+            logoImageView.image = image
+        } else {
+            logoImageView.image = nil
+        }
+        
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
@@ -112,14 +132,18 @@ class QuotaMenuItemView: NSView {
         resetLabel.stringValue = resetText
         resetLabel.lineBreakMode = .byTruncatingTail
         
+        addSubview(logoImageView)
         addSubview(titleLabel)
         addSubview(percentageLabel)
         addSubview(progressBar)
         addSubview(resetLabel)
         
-        NSLayoutConstraint.activate([
+        let hasLogo = logoImageView.image != nil
+        let contentLeadingAnchor = hasLogo ? logoImageView.trailingAnchor : leadingAnchor
+        let contentLeadingConstant: CGFloat = hasLogo ? 12 : 16
+        
+        var constraints = [
             // Row 1: Title and Percentage
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             
             percentageLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
@@ -127,17 +151,32 @@ class QuotaMenuItemView: NSView {
             percentageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
             
             // Row 2: Progress Bar
-            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             progressBar.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
             progressBar.heightAnchor.constraint(equalToConstant: 6),
             
             // Row 3: Reset time
-            resetLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             resetLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             resetLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 4),
             resetLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        ]
+        
+        if hasLogo {
+            constraints.append(contentsOf: [
+                logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+                logoImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                logoImageView.widthAnchor.constraint(equalToConstant: 32),
+                logoImageView.heightAnchor.constraint(equalToConstant: 32)
+            ])
+        }
+        
+        constraints.append(contentsOf: [
+            titleLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
+            progressBar.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
+            resetLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant)
         ])
+        
+        NSLayoutConstraint.activate(constraints)
     }
 }
 

@@ -12,11 +12,17 @@ swiftc -O -sdk "$(xcrun --show-sdk-path --sdk macosx)" "$DIR/main.swift" -o "$DI
 
 echo "Creating App Bundle structure..."
 mkdir -p "$DIR/AgyStatus.app/Contents/MacOS"
+mkdir -p "$DIR/AgyStatus.app/Contents/Resources"
 
 echo "Moving binary..."
 mv "$DIR/AgyStatus" "$DIR/AgyStatus.app/Contents/MacOS/AgyStatus"
 
 echo "Copying Info.plist..."
 cp "$DIR/Info.plist" "$DIR/AgyStatus.app/Contents/Info.plist"
+
+echo "Copying Resources..."
+if [ -d "$DIR/Resources" ]; then
+    cp "$DIR/Resources/"* "$DIR/AgyStatus.app/Contents/Resources/"
+fi
 
 echo "Build successful! AgyStatus.app created at $DIR/AgyStatus.app"
