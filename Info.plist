@@ -3,9 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.horse.AgyStatus</string>
+    <string>com.horse.AgyUsage</string>
     <key>CFBundleName</key>
-    <string>AgyStatus</string>
+    <string>Agy Usage</string>
+    <key>CFBundleExecutable</key>
+    <string>AgyUsage</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

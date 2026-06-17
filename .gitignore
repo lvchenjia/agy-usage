@@ -6,7 +6,7 @@
 .Trashes
 
 # Build artifacts (compiled binary inside .app)
-AgyStatus.app/
+Agy Usage.app/
 
 # Xcode
 *.xcworkspace

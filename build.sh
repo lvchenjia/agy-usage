@@ -4,29 +4,29 @@ set -e
 DIR="/Users/horse/Desktop/agy-status"
 
 echo "Cleaning up old build..."
-rm -rf "$DIR/AgyStatus" "$DIR/AgyStatus.app"
+rm -rf "$DIR/AgyUsage" "$DIR/Agy Usage.app"
 
-echo "Compiling AgyStatus..."
+echo "Compiling AgyUsage..."
 # Compile Swift code using optimization and the macosx SDK
-swiftc -O -sdk "$(xcrun --show-sdk-path --sdk macosx)" "$DIR/main.swift" -o "$DIR/AgyStatus"
+swiftc -O -sdk "$(xcrun --show-sdk-path --sdk macosx)" "$DIR/main.swift" -o "$DIR/AgyUsage"
 
 echo "Creating App Bundle structure..."
-mkdir -p "$DIR/AgyStatus.app/Contents/MacOS"
-mkdir -p "$DIR/AgyStatus.app/Contents/Resources"
+mkdir -p "$DIR/Agy Usage.app/Contents/MacOS"
+mkdir -p "$DIR/Agy Usage.app/Contents/Resources"
 
 echo "Moving binary..."
-mv "$DIR/AgyStatus" "$DIR/AgyStatus.app/Contents/MacOS/AgyStatus"
+mv "$DIR/AgyUsage" "$DIR/Agy Usage.app/Contents/MacOS/AgyUsage"
 
 echo "Copying Info.plist..."
-cp "$DIR/Info.plist" "$DIR/AgyStatus.app/Contents/Info.plist"
+cp "$DIR/Info.plist" "$DIR/Agy Usage.app/Contents/Info.plist"
 
 echo "Copying Resources..."
 if [ -d "$DIR/Resources" ]; then
-    cp "$DIR/Resources/"* "$DIR/AgyStatus.app/Contents/Resources/"
+    cp "$DIR/Resources/"* "$DIR/Agy Usage.app/Contents/Resources/"
 fi
 
 echo "Installing to /Applications..."
-rm -rf "/Applications/AgyStatus.app"
-cp -R "$DIR/AgyStatus.app" "/Applications/AgyStatus.app"
+rm -rf "/Applications/Agy Usage.app"
+cp -R "$DIR/Agy Usage.app" "/Applications/Agy Usage.app"
 
-echo "Build and installation successful! AgyStatus.app is now in /Applications/"
+echo "Build and installation successful! Agy Usage.app is now in /Applications/"
