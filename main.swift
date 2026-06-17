@@ -241,7 +241,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Determine image
         if showIcon {
             let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular, scale: .medium)
-            let img = NSImage(systemSymbolName: "gauge.medium", accessibilityDescription: nil)?
+            let img = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?
                 .withSymbolConfiguration(config)
             button.image = img
             // Keep icon monochrome (native look) — use text color to convey status instead

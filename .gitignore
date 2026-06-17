@@ -5,8 +5,8 @@
 .Spotlight-V100
 .Trashes
 
-# Build artifacts (compiled binary inside .app — exclude the binary, keep structure)
-AgyStatus.app/Contents/MacOS/AgyStatus
+# Build artifacts (compiled binary inside .app)
+AgyStatus.app/
 
 # Xcode
 *.xcworkspace
