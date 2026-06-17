@@ -210,6 +210,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    private var quitOnFailure: Bool {
+        get { UserDefaults.standard.bool(forKey: "quitOnFailure") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "quitOnFailure")
+        }
+    }
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hide dock icon programmatically
         NSApp.setActivationPolicy(.prohibited)
@@ -217,7 +224,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Register defaults
         UserDefaults.standard.register(defaults: [
             "showIcon": true,
-            "showPercentage": true
+            "showPercentage": true,
+            "quitOnFailure": false
         ])
         
         // Setup status item
@@ -244,6 +252,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func toggleShowPercentage(_ sender: NSMenuItem) {
         showPercentage = !showPercentage
+        rebuildMenu()
+    }
+    
+    @objc func toggleQuitOnFailure(_ sender: NSMenuItem) {
+        quitOnFailure = !quitOnFailure
         rebuildMenu()
     }
     
@@ -344,6 +357,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showPercentageItem.isEnabled = showIcon
         menu.addItem(showPercentageItem)
         
+        let quitOnFailureItem = NSMenuItem(title: "Auto-Quit if Offline", action: #selector(toggleQuitOnFailure(_:)), keyEquivalent: "")
+        quitOnFailureItem.target = self
+        quitOnFailureItem.state = quitOnFailure ? .on : .off
+        menu.addItem(quitOnFailureItem)
+        
         menu.addItem(NSMenuItem.separator())
         
         let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshTriggered(_:)), keyEquivalent: "r")
@@ -355,6 +373,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
     }
     
+    private func handleFetchFailure(errorDescription: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.isOffline = true
+            self.lastConfigs = nil
+            self.updateStatusBar(percentageText: "--%", color: nil)
+            self.rebuildMenu()
+            
+            if self.quitOnFailure {
+                print("AgyStatus: Fetch failed (\(errorDescription)). Auto-quitting as configured.")
+                NSApp.terminate(nil)
+            }
+        }
+    }
+    
     private func fetchStatus() {
         guard !isFetching else { return }
         isFetching = true
@@ -363,11 +396,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             
             guard let port = self.discoverPort() else {
+                self.handleFetchFailure(errorDescription: "Port discovery failed")
                 DispatchQueue.main.async {
-                    self.isOffline = true
-                    self.lastConfigs = nil
-                    self.updateStatusBar(percentageText: "--%", color: nil)
-                    self.rebuildMenu()
                     self.isFetching = false
                 }
                 return
@@ -375,11 +405,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             let urlString = "http://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/GetUserStatus"
             guard let url = URL(string: urlString) else {
+                self.handleFetchFailure(errorDescription: "Invalid URL")
                 DispatchQueue.main.async {
-                    self.isOffline = true
-                    self.lastConfigs = nil
-                    self.updateStatusBar(percentageText: "--%", color: nil)
-                    self.rebuildMenu()
                     self.isFetching = false
                 }
                 return
@@ -402,22 +429,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 if let error = error {
                     print("Error fetching status: \(error)")
-                    DispatchQueue.main.async {
-                        self.isOffline = true
-                        self.lastConfigs = nil
-                        self.updateStatusBar(percentageText: "--%", color: nil)
-                        self.rebuildMenu()
-                    }
+                    self.handleFetchFailure(errorDescription: error.localizedDescription)
                     return
                 }
                 
                 guard let data = data else {
-                    DispatchQueue.main.async {
-                        self.isOffline = true
-                        self.lastConfigs = nil
-                        self.updateStatusBar(percentageText: "--%", color: nil)
-                        self.rebuildMenu()
-                    }
+                    self.handleFetchFailure(errorDescription: "No data received")
                     return
                 }
                 
@@ -426,12 +443,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let responseObj = try decoder.decode(GetUserStatusResponse.self, from: data)
                     
                     guard let configs = responseObj.userStatus?.cascadeModelConfigData?.clientModelConfigs, !configs.isEmpty else {
-                        DispatchQueue.main.async {
-                            self.isOffline = true
-                            self.lastConfigs = nil
-                            self.updateStatusBar(percentageText: "--%", color: nil)
-                            self.rebuildMenu()
-                        }
+                        self.handleFetchFailure(errorDescription: "Empty configs in response")
                         return
                     }
                     
@@ -463,12 +475,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 } catch {
                     print("Failed to decode JSON: \(error)")
-                    DispatchQueue.main.async {
-                        self.isOffline = true
-                        self.lastConfigs = nil
-                        self.updateStatusBar(percentageText: "--%", color: nil)
-                        self.rebuildMenu()
-                    }
+                    self.handleFetchFailure(errorDescription: "JSON decoding error: \(error)")
                 }
             }
             task.resume()
