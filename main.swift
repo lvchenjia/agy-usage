@@ -259,7 +259,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let textColor = currentStatusColor ?? NSColor.labelColor
             let attrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: textColor,
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
+                .baselineOffset: -1.0
             ]
             button.attributedTitle = NSAttributedString(string: titleString, attributes: attrs)
         } else {
