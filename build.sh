@@ -25,4 +25,8 @@ if [ -d "$DIR/Resources" ]; then
     cp "$DIR/Resources/"* "$DIR/AgyStatus.app/Contents/Resources/"
 fi
 
-echo "Build successful! AgyStatus.app created at $DIR/AgyStatus.app"
+echo "Installing to /Applications..."
+rm -rf "/Applications/AgyStatus.app"
+cp -R "$DIR/AgyStatus.app" "/Applications/AgyStatus.app"
+
+echo "Build and installation successful! AgyStatus.app is now in /Applications/"
