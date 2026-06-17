@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Build artifacts (compiled binary inside .app — exclude the binary, keep structure)
+AgyStatus.app/Contents/MacOS/AgyStatus
+
+# Xcode
+*.xcworkspace
+*.xcuserdata
+xcuserdata/
+DerivedData/
