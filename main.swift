@@ -292,12 +292,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.imagePosition = .noImage
         }
         
-        // Determine title — color the percentage text to convey quota status
+        // Determine title — keep it standard monochrome (labelColor)
         if showPercentage {
             let titleString = currentPercentageText
-            let textColor = currentStatusColor ?? NSColor.labelColor
             let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: textColor,
+                .foregroundColor: NSColor.labelColor,
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 .baselineOffset: -1.0
             ]
