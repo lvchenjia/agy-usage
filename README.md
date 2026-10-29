@@ -45,24 +45,29 @@ The app will appear in your menu bar with no Dock icon.
 
 ### Method A: Via Antigravity Lifecycle Hook (Recommended)
 
-Antigravity natively supports running hooks at session start. Create or add to `~/.gemini/config/hooks.json`:
+Antigravity natively supports running hooks at session start and before invocations. Create or add to `~/.agents/hooks.json`:
 
 ```json
 {
-  "agy-usage-autostart": {
+  "agy-usage-sync": {
     "enabled": true,
     "SessionStart": [
       {
         "type": "command",
-        "command": "/Users/horse/Desktop/agy-usage/launch_hook.sh",
-        "timeout": 10
+        "command": "/Users/horse/Desktop/agy-usage/launch_hook.sh"
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "/Users/horse/Desktop/agy-usage/launch_hook.sh"
       }
     ]
   }
 }
 ```
 
-This guarantees `Agy Usage.app` is silently launched and authenticated whenever `agy` starts anywhere.
+This guarantees `Agy Usage.app` is silently launched and authenticated with the fresh CSRF token whenever `agy` starts or runs anywhere.
 
 ### Method B: Via Terminal zsh wrapper
 
@@ -70,13 +75,18 @@ Add this wrapper function to your `~/.zshrc`:
 
 ```zsh
 agy() {
-    if [[ -n "$ANTIGRAVITY_CSRF_TOKEN" ]]; then
-        echo -n "$ANTIGRAVITY_CSRF_TOKEN" > /tmp/agy_csrf_token
+    local token_file="/tmp/agy_csrf_token"
+    if [[ ! -s "$token_file" ]]; then
+        uuidgen | tr -d '\n' | tr '[:upper:]' '[:lower:]' > "$token_file"
     fi
+    local csrf_token
+    csrf_token=$(cat "$token_file")
+    export ANTIGRAVITY_CSRF_TOKEN="$csrf_token"
+
     if ! pgrep -fl "AgyUsage" > /dev/null 2>&1; then
         open "/Applications/Agy Usage.app"
     fi
-    command agy "$@"
+    command agy --csrf_token="$csrf_token" "$@"
 }
 ```
 

@@ -644,7 +644,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        return nil
+        let generated = UUID().uuidString.lowercased()
+        try? generated.write(toFile: "/tmp/agy_csrf_token", atomically: true, encoding: .utf8)
+        return generated
     }
     
     private func findStatusBarConfig(from configs: [ClientModelConfig]) -> ClientModelConfig? {

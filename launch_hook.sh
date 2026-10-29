@@ -1,5 +1,5 @@
 #!/bin/bash
-# Consume stdin only if non-interactive pipe
+# Consume stdin
 if [ ! -t 0 ]; then
     cat > /dev/null
 fi
@@ -16,3 +16,4 @@ if ! pgrep -fl "AgyUsage" > /dev/null 2>&1; then
 fi
 
 echo "{}"
+
