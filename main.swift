@@ -1,6 +1,7 @@
 import Cocoa
 import Foundation
 import AppKit
+import Darwin
 
 // MARK: - Models
 
@@ -269,7 +270,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func startPolling() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+        let interval = Double(ProcessInfo.processInfo.environment["AGY_TEST_POLL_INTERVAL"] ?? "60.0") ?? 60.0
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.fetchStatus()
         }
     }
@@ -411,27 +413,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func isAgyProcessRunning() -> Bool {
-        let process = Process()
-        process.launchPath = "/bin/ps"
-        process.arguments = ["-A", "-o", "comm="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return false }
-            for line in output.components(separatedBy: .newlines) {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed == "agy" || trimmed.hasSuffix("/agy") {
+        let targetName = ProcessInfo.processInfo.environment["AGY_TEST_TARGET_PROCESS"] ?? "agy"
+        
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let bytesUsed = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(MemoryLayout<pid_t>.stride * pids.count))
+        if bytesUsed <= 0 { return false }
+        
+        let count = Int(bytesUsed) / MemoryLayout<pid_t>.stride
+        for i in 0..<count {
+            let pid = pids[i]
+            if pid <= 0 { continue }
+            var buffer = [CChar](repeating: 0, count: 256)
+            let nameLen = proc_name(pid, &buffer, UInt32(buffer.count))
+            if nameLen > 0 {
+                let name = String(cString: buffer)
+                if name == targetName || name.hasSuffix("/\(targetName)") {
                     return true
                 }
             }
-            return false
-        } catch {
-            return false
         }
+        return false
     }
     
     private var cachedWorkingPort: Int? = nil
@@ -442,6 +443,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+            
+            let agyRunning = self.isAgyProcessRunning()
+            if !agyRunning && self.quitOnFailure {
+                DispatchQueue.main.async {
+                    NSLog("AgyUsage: No active agy process found in system. Auto-quitting as configured.")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             
             // Prefer cached working port to avoid costly `lsof` process invocation on every poll
             if let cached = self.cachedWorkingPort {
@@ -552,6 +562,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Helpers
     
     private func discoverCandidatePorts() -> [Int] {
+        if let testPortStr = ProcessInfo.processInfo.environment["AGY_TEST_PORT"], let testPort = Int(testPortStr) {
+            return [testPort]
+        }
+        
         let process = Process()
         process.launchPath = "/usr/sbin/lsof"
         process.arguments = ["-i", "-P", "-n"]
@@ -562,13 +576,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             print("Failed to run lsof: \(error)")
             return []
         }
         
+        // Critical: Read pipe data to EOF *before* waitUntilExit to prevent deadlock
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         
         var candidates: [(pid: Int, port: Int)] = []
