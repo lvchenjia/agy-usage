@@ -43,12 +43,37 @@ The app will appear in your menu bar with no Dock icon.
 
 ## Auto-start on agy CLI invocation
 
-To automatically launch the status bar app whenever you run `agy` in your terminal, add this wrapper function to your `~/.zshrc`:
+### Method A: Via Antigravity Lifecycle Hook (Recommended)
+
+Antigravity natively supports running hooks at session start. Create or add to `~/.gemini/config/hooks.json`:
+
+```json
+{
+  "agy-usage-autostart": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "/Users/horse/Desktop/agy-usage/launch_hook.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+This guarantees `Agy Usage.app` is silently launched and authenticated whenever `agy` starts anywhere.
+
+### Method B: Via Terminal zsh wrapper
+
+Add this wrapper function to your `~/.zshrc`:
 
 ```zsh
 agy() {
-    if ! pgrep -x "AgyUsage" > /dev/null; then
-        # Delay launch by 2 seconds in background to allow agy daemon to spin up
+    if [[ -n "$ANTIGRAVITY_CSRF_TOKEN" ]]; then
+        echo -n "$ANTIGRAVITY_CSRF_TOKEN" > /tmp/agy_csrf_token
+    fi
+    if ! pgrep -fl "AgyUsage" > /dev/null 2>&1; then
         (sleep 2 && open "/Applications/Agy Usage.app") &!
     fi
     command agy "$@"

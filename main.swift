@@ -388,6 +388,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    private var cachedWorkingPort: Int? = nil
+    
     private func fetchStatus() {
         guard !isFetching else { return }
         isFetching = true
@@ -395,96 +397,113 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            guard let port = self.discoverPort() else {
-                self.handleFetchFailure(errorDescription: "Port discovery failed")
-                DispatchQueue.main.async {
-                    self.isFetching = false
-                }
+            // Prefer cached working port to avoid costly `lsof` process invocation on every poll
+            if let cached = self.cachedWorkingPort {
+                self.tryFetch(ports: [cached], index: 0, isFallbackScan: false)
                 return
             }
             
-            let urlString = "http://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/GetUserStatus"
-            guard let url = URL(string: urlString) else {
-                self.handleFetchFailure(errorDescription: "Invalid URL")
-                DispatchQueue.main.async {
-                    self.isFetching = false
-                }
-                return
-            }
-            
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = "{}".data(using: .utf8)
-            
-            let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-                guard let self = self else { return }
-                
-                defer {
-                    DispatchQueue.main.async {
-                        self.isFetching = false
-                    }
-                }
-                
-                if let error = error {
-                    print("Error fetching status: \(error)")
-                    self.handleFetchFailure(errorDescription: error.localizedDescription)
-                    return
-                }
-                
-                guard let data = data else {
-                    self.handleFetchFailure(errorDescription: "No data received")
-                    return
-                }
-                
-                do {
-                    let decoder = JSONDecoder()
-                    let responseObj = try decoder.decode(GetUserStatusResponse.self, from: data)
-                    
-                    guard let configs = responseObj.userStatus?.cascadeModelConfigData?.clientModelConfigs, !configs.isEmpty else {
-                        self.handleFetchFailure(errorDescription: "Empty configs in response")
-                        return
-                    }
-                    
-                    DispatchQueue.main.async {
-                        self.isOffline = false
-                        self.lastConfigs = configs
-                        
-                        if let repConfig = self.findStatusBarConfig(from: configs),
-                           let fraction = repConfig.quotaInfo?.remainingFraction {
-                            
-                            let pct = Int(round(fraction * 100))
-                            let pctText = "\(pct)%"
-                            
-                            let color: NSColor
-                            if fraction > 0.50 {
-                                color = .systemGreen
-                            } else if fraction >= 0.20 {
-                                color = .systemOrange
-                            } else {
-                                color = .systemRed
-                            }
-                            
-                            self.updateStatusBar(percentageText: pctText, color: color)
-                        } else {
-                            self.updateStatusBar(percentageText: "--%", color: nil)
-                        }
-                        
-                        self.rebuildMenu()
-                    }
-                } catch {
-                    print("Failed to decode JSON: \(error)")
-                    self.handleFetchFailure(errorDescription: "JSON decoding error: \(error)")
-                }
-            }
-            task.resume()
+            self.scanAndFetch()
         }
+    }
+    
+    private func scanAndFetch() {
+        let ports = self.discoverCandidatePorts()
+        guard !ports.isEmpty else {
+            self.cachedWorkingPort = nil
+            self.handleFetchFailure(errorDescription: "No agy daemon ports found")
+            DispatchQueue.main.async { self.isFetching = false }
+            return
+        }
+        self.tryFetch(ports: ports, index: 0, isFallbackScan: true)
+    }
+    
+    private func tryFetch(ports: [Int], index: Int, isFallbackScan: Bool) {
+        guard index < ports.count else {
+            if !isFallbackScan {
+                // Cached port failed (e.g. daemon restarted), fallback to a fresh lsof scan
+                self.cachedWorkingPort = nil
+                self.scanAndFetch()
+                return
+            }
+            self.cachedWorkingPort = nil
+            self.handleFetchFailure(errorDescription: "All candidate ports failed or returned empty configs")
+            DispatchQueue.main.async { self.isFetching = false }
+            return
+        }
+        
+        let port = ports[index]
+        let urlString = "http://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/GetUserStatus"
+        guard let url = URL(string: urlString) else {
+            tryFetch(ports: ports, index: index + 1, isFallbackScan: isFallbackScan)
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        if let csrfToken = self.getCsrfToken() {
+            request.setValue(csrfToken, forHTTPHeaderField: "x-codeium-csrf-token")
+        }
+        request.httpBody = "{}".data(using: .utf8)
+        request.timeoutInterval = 3.0
+        
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if error != nil || data == nil {
+                self.tryFetch(ports: ports, index: index + 1, isFallbackScan: isFallbackScan)
+                return
+            }
+            
+            do {
+                let decoder = JSONDecoder()
+                let responseObj = try decoder.decode(GetUserStatusResponse.self, from: data!)
+                guard let configs = responseObj.userStatus?.cascadeModelConfigData?.clientModelConfigs, !configs.isEmpty else {
+                    self.tryFetch(ports: ports, index: index + 1, isFallbackScan: isFallbackScan)
+                    return
+                }
+                
+                // Cache the verified working port
+                self.cachedWorkingPort = port
+                
+                DispatchQueue.main.async {
+                    self.isFetching = false
+                    self.isOffline = false
+                    self.lastConfigs = configs
+                    
+                    if let repConfig = self.findStatusBarConfig(from: configs),
+                       let fraction = repConfig.quotaInfo?.remainingFraction {
+                        let pct = Int(round(fraction * 100))
+                        let pctText = "\(pct)%"
+                        let color: NSColor
+                        if fraction > 0.50 {
+                            color = .systemGreen
+                        } else if fraction >= 0.20 {
+                            color = .systemOrange
+                        } else {
+                            color = .systemRed
+                        }
+                        self.updateStatusBar(percentageText: pctText, color: color)
+                        NSLog("AgyUsage: successfully fetched quota %@", pctText)
+                    } else {
+                        self.updateStatusBar(percentageText: "--%", color: nil)
+                    }
+                    self.rebuildMenu()
+                }
+            } catch {
+                self.tryFetch(ports: ports, index: index + 1, isFallbackScan: isFallbackScan)
+            }
+        }
+        task.resume()
     }
     
     // MARK: - Helpers
     
-    private func discoverPort() -> Int? {
+    private func discoverCandidatePorts() -> [Int] {
         let process = Process()
         process.launchPath = "/usr/sbin/lsof"
         process.arguments = ["-i", "-P", "-n"]
@@ -498,11 +517,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             process.waitUntilExit()
         } catch {
             print("Failed to run lsof: \(error)")
-            return nil
+            return []
         }
         
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
         
         var candidates: [(pid: Int, port: Int)] = []
         
@@ -534,18 +553,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        if candidates.isEmpty { return nil }
-        
-        guard let maxPid = candidates.map({ $0.pid }).max() else { return nil }
-        let portsForMaxPid = candidates.filter { $0.pid == maxPid }.map { $0.port }
-        return portsForMaxPid.max()
+        var seenPorts = Set<Int>()
+        var result: [Int] = []
+        for c in candidates.sorted(by: { $0.pid > $1.pid }) {
+            if !seenPorts.contains(c.port) {
+                seenPorts.insert(c.port)
+                result.append(c.port)
+            }
+        }
+        return result
+    }
+    
+    private func getCsrfToken() -> String? {
+        if let envToken = ProcessInfo.processInfo.environment["ANTIGRAVITY_CSRF_TOKEN"], !envToken.isEmpty {
+            return envToken
+        }
+        let paths = [
+            "/tmp/agy_csrf_token",
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity-cli/.csrf_token").path
+        ]
+        for path in paths {
+            if let content = try? String(contentsOfFile: path, encoding: .utf8) {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+        return nil
     }
     
     private func findStatusBarConfig(from configs: [ClientModelConfig]) -> ClientModelConfig? {
-        if let medium = configs.first(where: { $0.label.localizedCaseInsensitiveContains("Gemini 3.5 Flash (Medium)") }) {
+        if let medium = configs.first(where: { $0.label.localizedCaseInsensitiveContains("Flash (Medium)") }) {
             return medium
         }
-        if let flash = configs.first(where: { $0.label.localizedCaseInsensitiveContains("Gemini 3.5 Flash") }) {
+        if let flash = configs.first(where: { $0.label.localizedCaseInsensitiveContains("Flash") }) {
             return flash
         }
         return configs.first
