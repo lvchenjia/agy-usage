@@ -262,10 +262,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        retryTimer?.invalidate()
     }
     
+    private var retryTimer: Timer?
+    
     private func startPolling() {
+        timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.fetchStatus()
+        }
+    }
+    
+    private func scheduleRetry() {
+        retryTimer?.invalidate()
+        // Fast retry in 2.0s when agy process exists but RPC hasn't responded yet
+        retryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
             self?.fetchStatus()
         }
     }
@@ -381,10 +393,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.updateStatusBar(percentageText: "--%", color: nil)
             self.rebuildMenu()
             
-            if self.quitOnFailure {
-                print("AgyStatus: Fetch failed (\(errorDescription)). Auto-quitting as configured.")
+            let agyRunning = self.isAgyProcessRunning()
+            
+            // If agy process is completely gone and Auto-Quit is enabled, quit cleanly
+            if !agyRunning && self.quitOnFailure {
+                NSLog("AgyUsage: No active agy process found in system. Auto-quitting as configured.")
                 NSApp.terminate(nil)
+                return
             }
+            
+            // If agy is still running, it is likely spinning up or recovering: retry in 2.0s
+            if agyRunning {
+                NSLog("AgyUsage: agy process is alive but RPC failed (%@). Retrying in 2.0s...", errorDescription)
+                self.scheduleRetry()
+            }
+        }
+    }
+    
+    private func isAgyProcessRunning() -> Bool {
+        let process = Process()
+        process.launchPath = "/bin/ps"
+        process.arguments = ["-A", "-o", "comm="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return false }
+            for line in output.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed == "agy" || trimmed.hasSuffix("/agy") {
+                    return true
+                }
+            }
+            return false
+        } catch {
+            return false
         }
     }
     
@@ -471,6 +517,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.cachedWorkingPort = port
                 
                 DispatchQueue.main.async {
+                    self.retryTimer?.invalidate()
+                    self.retryTimer = nil
                     self.isFetching = false
                     self.isOffline = false
                     self.lastConfigs = configs

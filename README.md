@@ -74,7 +74,7 @@ agy() {
         echo -n "$ANTIGRAVITY_CSRF_TOKEN" > /tmp/agy_csrf_token
     fi
     if ! pgrep -fl "AgyUsage" > /dev/null 2>&1; then
-        (sleep 2 && open "/Applications/Agy Usage.app") &!
+        open "/Applications/Agy Usage.app"
     fi
     command agy "$@"
 }
