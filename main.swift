@@ -248,6 +248,63 @@ class TokenStatsManager {
 
 // MARK: - Modern UI Components
 
+class RoundedCardContainer: NSView {
+    init(cornerRadius: CGFloat = 10) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
+        layer?.borderWidth = 0.5
+        updateBackground()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+    
+    private func updateBackground() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = isDark
+            ? NSColor(white: 0.20, alpha: 0.7).cgColor
+            : NSColor(white: 0.98, alpha: 0.95).cgColor
+    }
+}
+
+class ModernHeaderCell: NSTableHeaderCell {
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = self.alignment
+        paragraphStyle.lineBreakMode = .byTruncatingTail
+        
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraphStyle
+        ]
+        
+        let insetH: CGFloat = 8
+        let textRect = NSRect(
+            x: cellFrame.origin.x + insetH,
+            y: cellFrame.origin.y + (cellFrame.height - 14) / 2,
+            width: max(0, cellFrame.width - insetH * 2),
+            height: 14
+        )
+        self.stringValue.draw(in: textRect, withAttributes: attrs)
+    }
+}
+
+class ModernHeaderView: NSTableHeaderView {
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let sepRect = NSRect(x: 0, y: bounds.height - 0.5, width: bounds.width, height: 0.5)
+        NSColor.separatorColor.withAlphaComponent(0.15).setFill()
+        sepRect.fill()
+    }
+}
+
 class ProgressBarView: NSView {
     var progress: Double = 0.0 {
         didSet { needsDisplay = true }
@@ -391,7 +448,7 @@ class ModelCellView: NSTableCellView {
         }
         
         NSLayoutConstraint.activate([
-            iconBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            iconBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconBadge.widthAnchor.constraint(equalToConstant: 24),
             iconBadge.heightAnchor.constraint(equalToConstant: 24),
@@ -467,7 +524,7 @@ class CacheCellView: NSTableCellView {
         }
         
         NSLayoutConstraint.activate([
-            pillBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            pillBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             pillBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
             pillBadge.heightAnchor.constraint(equalToConstant: 18),
             
@@ -503,7 +560,7 @@ class MetricTextCellView: NSTableCellView {
         
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
@@ -537,11 +594,11 @@ class ShareCellView: NSTableCellView {
         addSubview(percentLabel)
         
         NSLayoutConstraint.activate([
-            percentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            percentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             percentLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             percentLabel.widthAnchor.constraint(equalToConstant: 42),
             
-            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             progressBar.trailingAnchor.constraint(equalTo: percentLabel.leadingAnchor, constant: -6),
             progressBar.centerYAnchor.constraint(equalTo: centerYAnchor),
             progressBar.heightAnchor.constraint(equalToConstant: 4)
@@ -598,6 +655,7 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
     private var outputCard: NativeMetricCard!
     private var totalCallsCard: NativeMetricCard!
     
+    private var tableContainer: RoundedCardContainer!
     private var tableView: NSTableView!
     private var emptyStateView: NSView!
     private var statusLabel: NSTextField!
@@ -687,30 +745,42 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         cardStack.addArrangedSubview(outputCard)
         cardStack.addArrangedSubview(totalCallsCard)
         
-        // 2. Table Inset Container ScrollView
+        // 2. Rounded Table Container Card
+        tableContainer = RoundedCardContainer(cornerRadius: 10)
+        tableContainer.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(tableContainer)
+        
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.wantsLayer = true
+        scrollView.layer?.cornerRadius = 10
+        scrollView.layer?.masksToBounds = true
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
-        contentView.addSubview(scrollView)
+        tableContainer.addSubview(scrollView)
         
         tableView = NSTableView()
-        tableView.style = .inset
-        tableView.rowHeight = 36
-        tableView.intercellSpacing = NSSize(width: 8, height: 2)
+        tableView.headerView = ModernHeaderView()
+        tableView.usesAlternatingRowBackgroundColors = false
+        tableView.backgroundColor = .clear
+        tableView.gridStyleMask = .solidHorizontalGridLineMask
+        tableView.gridColor = NSColor.separatorColor.withAlphaComponent(0.08)
+        tableView.rowHeight = 40
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         tableView.dataSource = self
         tableView.delegate = self
         
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "Model", 230, 180, .left),
-            ("calls", "Requests", 70, 50, .right),
-            ("input", "Input", 75, 55, .right),
-            ("cache", "Prompt Cache", 140, 110, .right),
-            ("output", "Output", 75, 55, .right),
-            ("total", "Total Tokens", 100, 80, .right),
-            ("share", "Share", 95, 75, .right)
+            ("model", "MODEL", 220, 180, .left),
+            ("calls", "REQUESTS", 75, 55, .right),
+            ("input", "INPUT", 80, 60, .right),
+            ("cache", "PROMPT CACHE", 140, 110, .right),
+            ("output", "OUTPUT", 80, 60, .right),
+            ("total", "TOTAL TOKENS", 105, 80, .right),
+            ("share", "SHARE", 95, 75, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -719,7 +789,9 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             col.width = width
             col.minWidth = minW
             col.resizingMask = [.userResizingMask, .autoresizingMask]
-            col.headerCell.alignment = align
+            let cell = ModernHeaderCell(textCell: title)
+            cell.alignment = align
+            col.headerCell = cell
             tableView.addTableColumn(col)
         }
         
@@ -729,7 +801,7 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         emptyStateView = makeEmptyStateView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
         emptyStateView.isHidden = true
-        contentView.addSubview(emptyStateView)
+        tableContainer.addSubview(emptyStateView)
         
         // 4. Bottom Native Status Bar
         let bottomView = NSView()
@@ -754,15 +826,20 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
             cardStack.heightAnchor.constraint(equalToConstant: 78),
             
-            // Inset Table ScrollView
-            scrollView.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
-            scrollView.bottomAnchor.constraint(equalTo: bottomView.topAnchor),
+            // Rounded Table Container
+            tableContainer.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),
+            tableContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            tableContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            tableContainer.bottomAnchor.constraint(equalTo: bottomView.topAnchor, constant: -10),
+            
+            scrollView.topAnchor.constraint(equalTo: tableContainer.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: tableContainer.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: tableContainer.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: tableContainer.bottomAnchor),
             
             // Empty State View centered over table area
-            emptyStateView.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            emptyStateView.centerXAnchor.constraint(equalTo: tableContainer.centerXAnchor),
+            emptyStateView.centerYAnchor.constraint(equalTo: tableContainer.centerYAnchor),
             emptyStateView.widthAnchor.constraint(equalToConstant: 340),
             emptyStateView.heightAnchor.constraint(equalToConstant: 130),
             
