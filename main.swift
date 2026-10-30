@@ -39,9 +39,21 @@ struct EndpointTarget: Equatable {
     let port: Int
 }
 
-// MARK: - Token Usage Models & Manager
+// MARK: - Token Usage Data Models & Manager
 
-struct ModelTokenStats {
+struct TokenRecord {
+    let modelName: String
+    let inputTokens: Int64
+    let cacheReadTokens: Int64
+    let outputTokens: Int64
+    let timestamp: Date?
+    
+    var totalTokens: Int64 {
+        return inputTokens + cacheReadTokens + outputTokens
+    }
+}
+
+struct ModelAggregatedStats {
     let modelName: String
     var callCount: Int = 0
     var inputTokens: Int64 = 0
@@ -50,6 +62,40 @@ struct ModelTokenStats {
     
     var totalTokens: Int64 {
         return inputTokens + cacheReadTokens + outputTokens
+    }
+    
+    var cacheRatio: Double {
+        let promptTokens = inputTokens + cacheReadTokens
+        guard promptTokens > 0 else { return 0.0 }
+        return Double(cacheReadTokens) / Double(promptTokens) * 100.0
+    }
+}
+
+enum TimeWindow: Int, CaseIterable {
+    case fiveHours = 0
+    case today = 1
+    case sevenDays = 2
+    case thirtyDays = 3
+    case allTime = 4
+    
+    var title: String {
+        switch self {
+        case .fiveHours: return "5h 窗口"
+        case .today: return "当天 (24h)"
+        case .sevenDays: return "近 7 天"
+        case .thirtyDays: return "近 30 天"
+        case .allTime: return "全部时间"
+        }
+    }
+    
+    var maxSeconds: TimeInterval? {
+        switch self {
+        case .fiveHours: return 5 * 3600
+        case .today: return 24 * 3600
+        case .sevenDays: return 7 * 86400
+        case .thirtyDays: return 30 * 86400
+        case .allTime: return nil
+        }
     }
 }
 
@@ -64,8 +110,25 @@ class TokenStatsManager {
         homeDir.appendingPathComponent(".gemini/antigravity-cli/conversations")
     }
     
-    func scanTokenStats() -> [ModelTokenStats] {
-        var statsDict: [String: ModelTokenStats] = [:]
+    private let isoDateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    
+    private let isoDateFractionFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    
+    func parseDate(_ str: String?) -> Date? {
+        guard let s = str, !s.isEmpty else { return nil }
+        return isoDateFormatter.date(from: s) ?? isoDateFractionFormatter.date(from: s)
+    }
+    
+    func scanAllRecords() -> [TokenRecord] {
+        var records: [TokenRecord] = []
         let fileManager = FileManager.default
         guard let dbFiles = try? fileManager.contentsOfDirectory(at: convDir, includingPropertiesForKeys: nil) else {
             return []
@@ -74,7 +137,6 @@ class TokenStatsManager {
         for dbURL in dbFiles where dbURL.pathExtension == "db" {
             let convId = dbURL.deletingPathExtension().lastPathComponent
             let transcriptURL = brainDir.appendingPathComponent(convId).appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            
             guard fileManager.fileExists(atPath: transcriptURL.path) else { continue }
             
             let modelMap = loadModelMap(from: dbURL)
@@ -85,7 +147,7 @@ class TokenStatsManager {
             guard let content = String(data: data, encoding: .utf8) else { continue }
             
             var genIdx = 0
-            content.enumerateLines { line, _ in
+            content.enumerateLines { [weak self] line, _ in
                 guard line.contains("\"PLANNER_RESPONSE\"") else { return }
                 guard let lineData = line.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -94,27 +156,29 @@ class TokenStatsManager {
                 let input = (json["input_tokens"] as? NSNumber)?.int64Value
                 let cache = (json["cache_read_tokens"] as? NSNumber)?.int64Value ?? 0
                 let output = (json["output_tokens"] as? NSNumber)?.int64Value ?? 0
+                let createdAtStr = json["created_at"] as? String
+                let date = self?.parseDate(createdAtStr)
                 
                 if let input = input {
                     let modelName = modelMap[genIdx] ?? (modelMap.values.first ?? "Gemini 3.8 Flash (Medium)")
-                    var item = statsDict[modelName] ?? ModelTokenStats(modelName: modelName)
-                    item.callCount += 1
-                    item.inputTokens += input
-                    item.cacheReadTokens += cache
-                    item.outputTokens += output
-                    statsDict[modelName] = item
+                    records.append(TokenRecord(
+                        modelName: modelName,
+                        inputTokens: input,
+                        cacheReadTokens: cache,
+                        outputTokens: output,
+                        timestamp: date
+                    ))
                 }
                 genIdx += 1
             }
         }
-        
-        return statsDict.values.sorted { $0.totalTokens > $1.totalTokens }
+        return records
     }
     
     private func loadModelMap(from dbURL: URL) -> [Int: String] {
         var map: [Int: String] = [:]
         var db: OpaquePointer?
-        if sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+        if sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK {
             var stmt: OpaquePointer?
             let query = "SELECT idx, data FROM gen_metadata ORDER BY idx"
             if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
@@ -159,27 +223,42 @@ class TokenStatsManager {
     }
 }
 
-// MARK: - Token Stats Window Controller
+// MARK: - Token Analytics Window Controller
 
 class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
-    private var stats: [ModelTokenStats] = []
+    private var allRecords: [TokenRecord] = []
+    private var currentWindow: TimeWindow = .fiveHours
+    private var displayedStats: [ModelAggregatedStats] = []
+    
+    private var segmentedControl: NSSegmentedControl!
     private var tableView: NSTableView!
+    
+    // Metric Card Value Labels
     private var totalTokensValLabel: NSTextField!
+    private var totalTokensSubLabel: NSTextField!
+    
     private var cacheRatioValLabel: NSTextField!
+    private var cacheRatioSubLabel: NSTextField!
+    
+    private var outputValLabel: NSTextField!
+    private var outputSubLabel: NSTextField!
+    
     private var totalCallsValLabel: NSTextField!
+    private var totalCallsSubLabel: NSTextField!
+    
     private var statusLabel: NSTextField!
     private var refreshButton: NSButton!
     
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 550),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Antigravity Token Usage"
+        window.title = "Antigravity Token Analytics"
         window.center()
-        window.minSize = NSSize(width: 580, height: 350)
+        window.minSize = NSSize(width: 720, height: 460)
         self.init(window: window)
         setupUI()
     }
@@ -190,27 +269,57 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         contentView.autoresizingMask = [.width, .height]
         window.contentView = contentView
         
-        // 1. Metric Cards Header
+        // 1. Top Header Area (Title & Segmented Window Selector)
+        let headerView = NSView()
+        headerView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(headerView)
+        
+        let headerTitle = NSTextField(labelWithString: "Token 用量与统计分析")
+        headerTitle.translatesAutoresizingMaskIntoConstraints = false
+        headerTitle.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        headerTitle.textColor = .labelColor
+        headerView.addSubview(headerTitle)
+        
+        let headerSubtitle = NSTextField(labelWithString: "Antigravity 本地对话调用记录与 Prompt 缓存分析")
+        headerSubtitle.translatesAutoresizingMaskIntoConstraints = false
+        headerSubtitle.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        headerSubtitle.textColor = .secondaryLabelColor
+        headerView.addSubview(headerSubtitle)
+        
+        let labels = TimeWindow.allCases.map { $0.title }
+        segmentedControl = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self, action: #selector(timeWindowChanged(_:)))
+        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
+        segmentedControl.selectedSegment = 0 // Default to 5h
+        headerView.addSubview(segmentedControl)
+        
+        // 2. Metrics Cards Row
         let cardStack = NSStackView()
         cardStack.orientation = .horizontal
         cardStack.distribution = .fillEqually
-        cardStack.spacing = 12
+        cardStack.spacing = 10
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(cardStack)
         
-        let (totCard, totVal) = makeMetricCard(title: "Total Processed Tokens")
-        let (cacheCard, cacheVal) = makeMetricCard(title: "Prompt Cache Ratio")
-        let (callsCard, callsVal) = makeMetricCard(title: "Total LLM Calls")
+        let (card1, val1, sub1) = makeMetricCard(symbol: "chart.bar.fill", title: "总处理 Token", tint: .systemBlue)
+        let (card2, val2, sub2) = makeMetricCard(symbol: "bolt.shield.fill", title: "缓存命中率 (Cache)", tint: .systemGreen)
+        let (card3, val3, sub3) = makeMetricCard(symbol: "arrow.up.right.circle.fill", title: "生成输出 (Output)", tint: .systemPurple)
+        let (card4, val4, sub4) = makeMetricCard(symbol: "waveform.path.ecg", title: "模型调用次数", tint: .systemOrange)
         
-        self.totalTokensValLabel = totVal
-        self.cacheRatioValLabel = cacheVal
-        self.totalCallsValLabel = callsVal
+        self.totalTokensValLabel = val1
+        self.totalTokensSubLabel = sub1
+        self.cacheRatioValLabel = val2
+        self.cacheRatioSubLabel = sub2
+        self.outputValLabel = val3
+        self.outputSubLabel = sub3
+        self.totalCallsValLabel = val4
+        self.totalCallsSubLabel = sub4
         
-        cardStack.addArrangedSubview(totCard)
-        cardStack.addArrangedSubview(cacheCard)
-        cardStack.addArrangedSubview(callsCard)
+        cardStack.addArrangedSubview(card1)
+        cardStack.addArrangedSubview(card2)
+        cardStack.addArrangedSubview(card3)
+        cardStack.addArrangedSubview(card4)
         
-        // 2. Table View
+        // 3. Table View
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -220,164 +329,290 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         tableView = NSTableView()
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.gridStyleMask = [.solidHorizontalGridLineMask]
-        tableView.rowHeight = 24
+        tableView.rowHeight = 28
         tableView.dataSource = self
         tableView.delegate = self
         
-        let columns: [(String, String, CGFloat)] = [
-            ("model", "Model", 180),
-            ("calls", "Calls", 65),
-            ("input", "Input", 100),
-            ("cache", "Cache Read", 105),
-            ("output", "Output", 85),
-            ("total", "Total", 110)
+        let columns: [(String, String, CGFloat, NSTextAlignment)] = [
+            ("model", "模型名称 (Model)", 210, .left),
+            ("calls", "调用次数", 75, .right),
+            ("input", "输入 Tokens", 100, .right),
+            ("cache", "缓存读取 (Prompt Cache)", 150, .right),
+            ("output", "输出 Tokens", 95, .right),
+            ("total", "总计 Tokens", 115, .right),
+            ("share", "占比 (Share)", 70, .right)
         ]
         
-        for (colId, title, width) in columns {
+        for (colId, title, width, align) in columns {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(colId))
             col.title = title
             col.width = width
             col.minWidth = 50
+            col.headerCell.alignment = align
             tableView.addTableColumn(col)
         }
         
         scrollView.documentView = tableView
         
-        // 3. Bottom Bar
+        // 4. Bottom Controls Bar
         let bottomView = NSView()
         bottomView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(bottomView)
         
-        statusLabel = NSTextField(labelWithString: "Ready")
+        statusLabel = NSTextField(labelWithString: "准备就绪")
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         bottomView.addSubview(statusLabel)
         
-        refreshButton = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked(_:)))
+        refreshButton = NSButton(title: "刷新数据", target: self, action: #selector(refreshClicked(_:)))
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
         refreshButton.bezelStyle = .rounded
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")?.withSymbolConfiguration(config)
+        refreshButton.imagePosition = .imageLeading
         bottomView.addSubview(refreshButton)
         
-        // Constraints
+        let closeButton = NSButton(title: "关闭", target: self, action: #selector(closeClicked(_:)))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.bezelStyle = .rounded
+        bottomView.addSubview(closeButton)
+        
+        // AutoLayout Constraints
         NSLayoutConstraint.activate([
-            cardStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            cardStack.heightAnchor.constraint(equalToConstant: 72),
+            // Header
+            headerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            headerView.heightAnchor.constraint(equalToConstant: 38),
             
-            scrollView.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 14),
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor),
+            headerTitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
+            
+            headerSubtitle.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 2),
+            headerSubtitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
+            
+            segmentedControl.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            segmentedControl.trailingAnchor.constraint(equalTo: headerView.trailingAnchor),
+            
+            // Cards Row
+            cardStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 12),
+            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            cardStack.heightAnchor.constraint(equalToConstant: 78),
+            
+            // Table
+            scrollView.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
             scrollView.bottomAnchor.constraint(equalTo: bottomView.topAnchor, constant: -10),
             
-            bottomView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            bottomView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            // Bottom Bar
+            bottomView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            bottomView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
             bottomView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-            bottomView.heightAnchor.constraint(equalToConstant: 32),
+            bottomView.heightAnchor.constraint(equalToConstant: 30),
             
             statusLabel.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: refreshButton.leadingAnchor, constant: -12),
             
-            refreshButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor),
-            refreshButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor)
+            refreshButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
+            refreshButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
+            
+            closeButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor),
+            closeButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor)
         ])
     }
     
-    private func makeMetricCard(title: String) -> (NSBox, NSTextField) {
-        let container = NSBox()
-        container.boxType = .custom
-        container.cornerRadius = 8
-        container.fillColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
-        container.borderColor = NSColor.separatorColor.withAlphaComponent(0.3)
-        container.borderWidth = 1
+    private func makeMetricCard(symbol: String, title: String, tint: NSColor) -> (NSBox, NSTextField, NSTextField) {
+        let box = NSBox()
+        box.boxType = .custom
+        box.cornerRadius = 9
+        box.fillColor = NSColor.windowBackgroundColor.withAlphaComponent(0.65)
+        box.borderColor = NSColor.separatorColor.withAlphaComponent(0.35)
+        box.borderWidth = 1
+        
+        let iconView = NSImageView()
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(config)
+        iconView.contentTintColor = tint
+        box.contentView?.addSubview(iconView)
         
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         titleLabel.textColor = .secondaryLabelColor
-        container.contentView?.addSubview(titleLabel)
+        box.contentView?.addSubview(titleLabel)
         
         let valueLabel = NSTextField(labelWithString: "--")
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .bold)
         valueLabel.textColor = .labelColor
-        container.contentView?.addSubview(valueLabel)
+        box.contentView?.addSubview(valueLabel)
         
-        if let cv = container.contentView {
+        let subLabel = NSTextField(labelWithString: "--")
+        subLabel.translatesAutoresizingMaskIntoConstraints = false
+        subLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        subLabel.textColor = .tertiaryLabelColor
+        box.contentView?.addSubview(subLabel)
+        
+        if let cv = box.contentView {
             NSLayoutConstraint.activate([
-                titleLabel.topAnchor.constraint(equalTo: cv.topAnchor, constant: 10),
-                titleLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
+                iconView.topAnchor.constraint(equalTo: cv.topAnchor, constant: 8),
+                iconView.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 10),
+                iconView.widthAnchor.constraint(equalToConstant: 16),
+                iconView.heightAnchor.constraint(equalToConstant: 16),
                 
-                valueLabel.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -10),
-                valueLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12)
+                titleLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
+                titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8),
+                
+                valueLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 4),
+                valueLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 10),
+                valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8),
+                
+                subLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
+                subLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 10),
+                subLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8)
             ])
         }
         
-        return (container, valueLabel)
+        return (box, valueLabel, subLabel)
+    }
+    
+    @objc func timeWindowChanged(_ sender: NSSegmentedControl) {
+        let index = sender.selectedSegment
+        if let window = TimeWindow(rawValue: index) {
+            self.currentWindow = window
+            self.filterAndDisplay()
+        }
     }
     
     @objc func refreshClicked(_ sender: Any?) {
-        refreshData()
+        loadData()
     }
     
-    func refreshData() {
+    @objc func closeClicked(_ sender: Any?) {
+        self.window?.close()
+    }
+    
+    func loadData() {
         refreshButton.isEnabled = false
-        statusLabel.stringValue = "Scanning conversations..."
+        statusLabel.stringValue = "正在扫描本地所有对话记录..."
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let scanned = TokenStatsManager.shared.scanTokenStats()
+            let scanned = TokenStatsManager.shared.scanAllRecords()
             
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.stats = scanned
-                self.tableView.reloadData()
+                self.allRecords = scanned
                 self.refreshButton.isEnabled = true
-                
-                var totalIn: Int64 = 0
-                var totalCache: Int64 = 0
-                var totalOut: Int64 = 0
-                var totalCalls = 0
-                for s in scanned {
-                    totalIn += s.inputTokens
-                    totalCache += s.cacheReadTokens
-                    totalOut += s.outputTokens
-                    totalCalls += s.callCount
-                }
-                let totalAll = totalIn + totalCache + totalOut
-                
-                let formatter = NumberFormatter()
-                formatter.numberStyle = .decimal
-                
-                self.totalTokensValLabel.stringValue = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
-                self.totalCallsValLabel.stringValue = "\(totalCalls)"
-                
-                if (totalIn + totalCache) > 0 {
-                    let cacheRatio = Double(totalCache) / Double(totalIn + totalCache) * 100.0
-                    self.cacheRatioValLabel.stringValue = String(format: "%.1f%%", cacheRatio)
-                    self.cacheRatioValLabel.textColor = .systemGreen
-                } else {
-                    self.cacheRatioValLabel.stringValue = "0.0%"
-                    self.cacheRatioValLabel.textColor = .labelColor
-                }
-                
-                let df = DateFormatter()
-                df.timeStyle = .medium
-                self.statusLabel.stringValue = "Scanned \(scanned.count) active models. Updated at \(df.string(from: Date()))."
+                self.filterAndDisplay()
             }
+        }
+    }
+    
+    private func filterAndDisplay() {
+        let now = Date()
+        let maxSec = currentWindow.maxSeconds
+        
+        // Filter records by selected time window
+        let filtered: [TokenRecord]
+        if let limit = maxSec {
+            filtered = allRecords.filter { r in
+                guard let t = r.timestamp else { return false }
+                return now.timeIntervalSince(t) <= limit
+            }
+        } else {
+            filtered = allRecords
+        }
+        
+        // Aggregate by model
+        var statsDict: [String: ModelAggregatedStats] = [:]
+        var totalIn: Int64 = 0
+        var totalCache: Int64 = 0
+        var totalOut: Int64 = 0
+        let totalCalls = filtered.count
+        
+        for r in filtered {
+            var item = statsDict[r.modelName] ?? ModelAggregatedStats(modelName: r.modelName)
+            item.callCount += 1
+            item.inputTokens += r.inputTokens
+            item.cacheReadTokens += r.cacheReadTokens
+            item.outputTokens += r.outputTokens
+            statsDict[r.modelName] = item
+            
+            totalIn += r.inputTokens
+            totalCache += r.cacheReadTokens
+            totalOut += r.outputTokens
+        }
+        
+        let totalAll = totalIn + totalCache + totalOut
+        self.displayedStats = statsDict.values.sorted { $0.totalTokens > $1.totalTokens }
+        self.tableView.reloadData()
+        
+        // Update Metric Cards
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        
+        // 1. Total Tokens
+        self.totalTokensValLabel.stringValue = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
+        self.totalTokensSubLabel.stringValue = formatCompactNumber(totalAll) + " tokens 处理"
+        
+        // 2. Cache Hit Ratio
+        let promptTokens = totalIn + totalCache
+        if promptTokens > 0 {
+            let ratio = Double(totalCache) / Double(promptTokens) * 100.0
+            self.cacheRatioValLabel.stringValue = String(format: "%.1f%%", ratio)
+            self.cacheRatioValLabel.textColor = .systemGreen
+            self.cacheRatioSubLabel.stringValue = "已缓存: " + formatCompactNumber(totalCache) + " tokens"
+        } else {
+            self.cacheRatioValLabel.stringValue = "0.0%"
+            self.cacheRatioValLabel.textColor = .labelColor
+            self.cacheRatioSubLabel.stringValue = "无 Prompt 缓存"
+        }
+        
+        // 3. Output Tokens
+        self.outputValLabel.stringValue = formatter.string(from: NSNumber(value: totalOut)) ?? "\(totalOut)"
+        let outShare = totalAll > 0 ? (Double(totalOut) / Double(totalAll) * 100.0) : 0.0
+        self.outputSubLabel.stringValue = String(format: "占总用量 %.1f%%", outShare)
+        
+        // 4. Total Calls
+        self.totalCallsValLabel.stringValue = "\(totalCalls) 次"
+        if totalCalls > 0 {
+            let avgPerCall = totalAll / Int64(totalCalls)
+            self.totalCallsSubLabel.stringValue = "均次: " + formatCompactNumber(avgPerCall) + " tokens"
+        } else {
+            self.totalCallsSubLabel.stringValue = "当前窗口暂无调用"
+        }
+        
+        // Status bar
+        let df = DateFormatter()
+        df.timeStyle = .medium
+        statusLabel.stringValue = "● 已扫描 \(allRecords.count) 条历史记录 (当前窗口: \(filtered.count) 条) · 上次更新: \(df.string(from: Date()))"
+    }
+    
+    private func formatCompactNumber(_ n: Int64) -> String {
+        if n >= 1_000_000 {
+            return String(format: "%.2fM", Double(n) / 1_000_000.0)
+        } else if n >= 1_000 {
+            return String(format: "%.1fK", Double(n) / 1_000.0)
+        } else {
+            return "\(n)"
         }
     }
     
     // MARK: - NSTableViewDataSource & Delegate
     
     func numberOfRows(in tableView: NSTableView) -> Int {
-        return stats.count
+        return displayedStats.count
     }
     
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < stats.count, let column = tableColumn else { return nil }
-        let item = stats[row]
+        guard row < displayedStats.count, let column = tableColumn else { return nil }
+        let item = displayedStats[row]
         let colId = column.identifier.rawValue
         
         let cell = NSTextField(labelWithString: "")
@@ -386,6 +621,8 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
+        
+        let totalAcrossAll = displayedStats.reduce(0) { $0 + $1.totalTokens }
         
         switch colId {
         case "model":
@@ -399,7 +636,8 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             cell.stringValue = formatter.string(from: NSNumber(value: item.inputTokens)) ?? "0"
             cell.alignment = .right
         case "cache":
-            cell.stringValue = formatter.string(from: NSNumber(value: item.cacheReadTokens)) ?? "0"
+            let cacheStr = formatter.string(from: NSNumber(value: item.cacheReadTokens)) ?? "0"
+            cell.stringValue = "\(cacheStr) (\(String(format: "%.1f%%", item.cacheRatio)))"
             cell.textColor = .systemGreen
             cell.alignment = .right
         case "output":
@@ -409,6 +647,11 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             cell.stringValue = formatter.string(from: NSNumber(value: item.totalTokens)) ?? "0"
             cell.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
             cell.alignment = .right
+        case "share":
+            let share = totalAcrossAll > 0 ? (Double(item.totalTokens) / Double(totalAcrossAll) * 100.0) : 0.0
+            cell.stringValue = String(format: "%.1f%%", share)
+            cell.alignment = .right
+            cell.textColor = .secondaryLabelColor
         default:
             break
         }
@@ -457,53 +700,43 @@ class QuotaMenuItemView: NSView {
     
     init(title: String, fraction: Double, resetText: String) {
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 64))
-        setupUI(title: title, fraction: fraction, resetText: resetText)
+        setupViews(title: title, fraction: fraction, resetText: resetText)
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    private func setupUI(title: String, fraction: Double, resetText: String) {
-        // Logo setup
+    private func setupViews(title: String, fraction: Double, resetText: String) {
+        // Setup logo image view
         logoImageView.translatesAutoresizingMaskIntoConstraints = false
         logoImageView.imageScaling = .scaleProportionallyUpOrDown
         
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        let symbolName: String
-        let tintColor: NSColor
-        
-        let lower = title.lowercased()
-        if lower.contains("gemini") {
-            symbolName = "sparkles"
-            tintColor = .systemBlue
-        } else if lower.contains("claude") {
-            symbolName = "brain.head.profile"
-            tintColor = .systemOrange
-        } else if lower.contains("gpt") {
-            symbolName = "bolt.fill"
-            tintColor = .systemGreen
+        let imageName: String
+        if title.localizedCaseInsensitiveContains("Gemini") {
+            imageName = "gemini"
+        } else if title.localizedCaseInsensitiveContains("Claude") {
+            imageName = "claude"
         } else {
-            symbolName = "cpu"
-            tintColor = .secondaryLabelColor
+            imageName = ""
         }
         
-        let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)?
-            .withSymbolConfiguration(config)
-        logoImageView.image = img
-        logoImageView.contentTintColor = tintColor
-        addSubview(logoImageView)
+        if !imageName.isEmpty, let image = NSImage(named: imageName) {
+            logoImageView.image = image
+        } else {
+            logoImageView.image = nil
+        }
         
-        // Title Label
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        titleLabel.stringValue = title
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
-        addSubview(titleLabel)
+        titleLabel.stringValue = title
+        titleLabel.lineBreakMode = .byTruncatingTail
         
-        // Percentage Label
         percentageLabel.translatesAutoresizingMaskIntoConstraints = false
-        percentageLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+        percentageLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        percentageLabel.alignment = .right
+        
         let rawPct = fraction * 100.0
         let pct: Int
         if fraction >= 0.9999 {
@@ -516,58 +749,70 @@ class QuotaMenuItemView: NSView {
             pct = Int(round(rawPct))
         }
         percentageLabel.stringValue = "\(pct)%"
-        addSubview(percentageLabel)
         
-        // Progress Bar
+        let statusColor: NSColor
+        if fraction > 0.50 {
+            statusColor = .systemGreen
+        } else if fraction >= 0.20 {
+            statusColor = .systemOrange
+        } else {
+            statusColor = .systemRed
+        }
+        percentageLabel.textColor = .labelColor
+        
         progressBar.translatesAutoresizingMaskIntoConstraints = false
         progressBar.progress = fraction
-        if fraction > 0.50 {
-            progressBar.color = .systemGreen
-            percentageLabel.textColor = .systemGreen
-        } else if fraction >= 0.20 {
-            progressBar.color = .systemOrange
-            percentageLabel.textColor = .systemOrange
-        } else {
-            progressBar.color = .systemRed
-            percentageLabel.textColor = .systemRed
-        }
-        addSubview(progressBar)
+        progressBar.color = statusColor
         
-        // Reset Time Label
         resetLabel.translatesAutoresizingMaskIntoConstraints = false
-        resetLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        resetLabel.stringValue = resetText
+        resetLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
         resetLabel.textColor = .secondaryLabelColor
+        resetLabel.stringValue = resetText
+        resetLabel.lineBreakMode = .byTruncatingTail
+        
+        addSubview(logoImageView)
+        addSubview(titleLabel)
+        addSubview(percentageLabel)
+        addSubview(progressBar)
         addSubview(resetLabel)
         
-        // Layout Constraints
-        let constraints = [
-            // Logo
-            logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            logoImageView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            logoImageView.widthAnchor.constraint(equalToConstant: 20),
-            logoImageView.heightAnchor.constraint(equalToConstant: 20),
+        let hasLogo = logoImageView.image != nil
+        let contentLeadingAnchor = hasLogo ? logoImageView.trailingAnchor : leadingAnchor
+        let contentLeadingConstant: CGFloat = hasLogo ? 12 : 16
+        
+        var constraints = [
+            // Row 1: Title and Percentage
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             
-            // Title
-            titleLabel.leadingAnchor.constraint(equalTo: logoImageView.trailingAnchor, constant: 10),
-            titleLabel.centerYAnchor.constraint(equalTo: logoImageView.centerYAnchor),
+            percentageLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            percentageLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            percentageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
             
-            // Percentage
-            percentageLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            percentageLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: percentageLabel.leadingAnchor, constant: -8),
+            // Row 2: Progress Bar
+            progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            progressBar.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            progressBar.heightAnchor.constraint(equalToConstant: 6),
             
-            // Progress Bar
-            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            progressBar.topAnchor.constraint(equalTo: logoImageView.bottomAnchor, constant: 8),
-            progressBar.heightAnchor.constraint(equalToConstant: 5),
-            
-            // Reset Time
-            resetLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            resetLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 6),
-            resetLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
+            // Row 3: Reset time
+            resetLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            resetLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 4),
+            resetLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
         ]
+        
+        if hasLogo {
+            constraints.append(contentsOf: [
+                logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+                logoImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                logoImageView.widthAnchor.constraint(equalToConstant: 32),
+                logoImageView.heightAnchor.constraint(equalToConstant: 32)
+            ])
+        }
+        
+        constraints.append(contentsOf: [
+            titleLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
+            progressBar.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
+            resetLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant)
+        ])
         
         NSLayoutConstraint.activate(constraints)
     }
@@ -715,7 +960,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tokenStatsWindowController?.showWindow(self)
         tokenStatsWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        tokenStatsWindowController?.refreshData()
+        tokenStatsWindowController?.loadData()
     }
     
     @objc func quitTriggered(_ sender: Any?) {
@@ -812,7 +1057,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        let refreshItem = NSMenuItem(title: "Refresh Quota", action: #selector(refreshTriggered(_:)), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshTriggered(_:)), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
         
