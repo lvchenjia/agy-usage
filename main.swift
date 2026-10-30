@@ -248,6 +248,185 @@ class TokenStatsManager {
 
 // MARK: - Modern UI Components
 
+class CapsulePillBar: NSView {
+    var onSelectionChanged: ((Int) -> Void)?
+    private var buttons: [NSButton] = []
+    private(set) var selectedIndex: Int = 0
+    
+    init(items: [String]) {
+        super.init(frame: .zero)
+        setup(items: items)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    private func setup(items: [String]) {
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
+        
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
+            heightAnchor.constraint(equalToConstant: 34)
+        ])
+        
+        for (i, item) in items.enumerated() {
+            let btn = NSButton(title: item, target: self, action: #selector(btnClicked(_:)))
+            btn.tag = i
+            btn.isBordered = false
+            btn.wantsLayer = true
+            btn.layer?.cornerRadius = 7
+            btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            buttons.append(btn)
+            stack.addArrangedSubview(btn)
+            btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 62).isActive = true
+        }
+        updateButtonStyles()
+    }
+    
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateButtonStyles()
+    }
+    
+    @objc private func btnClicked(_ sender: NSButton) {
+        setSelectedIndex(sender.tag)
+        onSelectionChanged?(sender.tag)
+    }
+    
+    func setSelectedIndex(_ index: Int) {
+        guard index >= 0 && index < buttons.count else { return }
+        selectedIndex = index
+        updateButtonStyles()
+    }
+    
+    private func updateButtonStyles() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        for (i, btn) in buttons.enumerated() {
+            let isSel = (i == selectedIndex)
+            if isSel {
+                btn.layer?.backgroundColor = isDark
+                    ? NSColor(white: 0.28, alpha: 1.0).cgColor
+                    : NSColor.white.cgColor
+                btn.contentTintColor = .labelColor
+                btn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+                btn.layer?.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.35 : 0.08).cgColor
+                btn.layer?.shadowOpacity = 1.0
+                btn.layer?.shadowOffset = CGSize(width: 0, height: 1)
+                btn.layer?.shadowRadius = 2.0
+            } else {
+                btn.layer?.backgroundColor = NSColor.clear.cgColor
+                btn.contentTintColor = .secondaryLabelColor
+                btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+                btn.layer?.shadowOpacity = 0.0
+            }
+        }
+    }
+}
+
+class FlatActionPillButton: NSButton {
+    var isPrimary: Bool = false {
+        didSet { updateAppearance() }
+    }
+    
+    init(title: String, symbol: String? = nil, isPrimary: Bool = false, target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.isPrimary = isPrimary
+        self.target = target
+        self.action = action
+        self.isBordered = false
+        self.wantsLayer = true
+        self.layer?.cornerRadius = 8
+        self.font = NSFont.systemFont(ofSize: 13, weight: isPrimary ? .semibold : .medium)
+        
+        if let sym = symbol {
+            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+            self.image = NSImage(systemSymbolName: sym, accessibilityDescription: title)?.withSymbolConfiguration(config)
+            self.imagePosition = .imageLeading
+            self.title = "  " + title
+        } else {
+            self.title = title
+        }
+        updateAppearance()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+    
+    private func updateAppearance() {
+        if isPrimary {
+            layer?.backgroundColor = NSColor.systemBlue.cgColor
+            contentTintColor = .white
+        } else {
+            let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            layer?.backgroundColor = isDark
+                ? NSColor(white: 0.22, alpha: 1.0).cgColor
+                : NSColor(white: 0.92, alpha: 1.0).cgColor
+            contentTintColor = .labelColor
+        }
+    }
+}
+
+class FlatTableHeaderView: NSTableHeaderView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.clear.set()
+        bounds.fill()
+        
+        super.draw(dirtyRect)
+        
+        let hairline = NSRect(x: 0, y: bounds.height - 0.5, width: bounds.width, height: 0.5)
+        NSColor.separatorColor.withAlphaComponent(0.18).set()
+        hairline.fill()
+    }
+}
+
+class FlatTableHeaderCell: NSTableHeaderCell {
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        drawInterior(withFrame: cellFrame, in: controlView)
+    }
+    
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let text = stringValue
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.alignment = self.alignment
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: pStyle
+        ]
+        let inset = NSRect(x: cellFrame.origin.x, y: cellFrame.origin.y + 7, width: cellFrame.width - 4, height: cellFrame.height - 7)
+        text.draw(in: inset, withAttributes: attrs)
+    }
+}
+
+class ModernTableRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        if isSelected {
+            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 8, yRadius: 8)
+            NSColor.quaternaryLabelColor.withAlphaComponent(0.12).set()
+            path.fill()
+        }
+    }
+    
+    override func drawSeparator(in dirtyRect: NSRect) {
+        let sepColor = NSColor.separatorColor.withAlphaComponent(0.10)
+        sepColor.set()
+        let sepRect = NSRect(x: 14, y: 0, width: bounds.width - 28, height: 0.5)
+        sepRect.fill()
+    }
+}
+
 class MetricCardView: NSView {
     private let dotView = NSBox()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -554,7 +733,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     private var currentWindow: TimeWindow = .fiveHours
     private var displayedStats: [ModelAggregatedStats] = []
     
-    private var segmentedControl: NSSegmentedControl!
+    private var pillBar: CapsulePillBar!
     private var tableView: NSTableView!
     private var emptyStateView: NSView!
     
@@ -565,7 +744,8 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     private var totalCallsCard: MetricCardView!
     
     private var statusLabel: NSTextField!
-    private var refreshButton: NSButton!
+    private var refreshButton: FlatActionPillButton!
+    private var closeButton: FlatActionPillButton!
     
     convenience init() {
         let window = AnalyticsWindow(
@@ -595,14 +775,14 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         window.contentView = visualEffect
         let contentView = visualEffect
         
-        // 1. Top Header Area (Integrated Toolbar Title & Segmented Window Selector)
+        // 1. Top Header Area (Integrated Toolbar Title & Elevated Capsule Pill Selector)
         let headerView = NSView()
         headerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(headerView)
         
         let headerTitle = NSTextField(labelWithString: "Token 用量分析")
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        headerTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
         headerTitle.textColor = .labelColor
         headerView.addSubview(headerTitle)
         
@@ -613,11 +793,15 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         headerView.addSubview(headerSubtitle)
         
         let labels = TimeWindow.allCases.map { $0.title }
-        segmentedControl = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self, action: #selector(timeWindowChanged(_:)))
-        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
-        segmentedControl.segmentStyle = .texturedRounded
-        segmentedControl.selectedSegment = 0 // Default to 5h
-        headerView.addSubview(segmentedControl)
+        pillBar = CapsulePillBar(items: labels)
+        pillBar.translatesAutoresizingMaskIntoConstraints = false
+        pillBar.onSelectionChanged = { [weak self] index in
+            if let window = TimeWindow(rawValue: index) {
+                self?.currentWindow = window
+                self?.filterAndDisplay()
+            }
+        }
+        headerView.addSubview(pillBar)
         
         // 2. Metrics Cards Row
         let cardStack = NSStackView()
@@ -650,6 +834,8 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         tableContainer.contentView?.addSubview(scrollView)
@@ -658,20 +844,23 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.backgroundColor = .clear
         tableView.gridStyleMask = [] // Clean modern minimalist list style
-        tableView.rowHeight = 36
-        tableView.intercellSpacing = NSSize(width: 10, height: 2)
+        tableView.rowHeight = 44
+        tableView.intercellSpacing = NSSize(width: 8, height: 4)
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         tableView.dataSource = self
         tableView.delegate = self
         
+        let modernHeader = FlatTableHeaderView()
+        tableView.headerView = modernHeader
+        
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "模型 (Model)", 190, 150, .left),
-            ("calls", "调用", 48, 42, .right),
-            ("input", "输入", 72, 60, .right),
-            ("cache", "Prompt 缓存", 140, 115, .right),
-            ("output", "输出", 72, 60, .right),
-            ("total", "总消耗", 88, 70, .right),
-            ("share", "占比", 98, 80, .right)
+            ("model", "模型 (Model)", 190, 140, .left),
+            ("calls", "调用", 48, 40, .right),
+            ("input", "输入", 72, 58, .right),
+            ("cache", "Prompt 缓存", 140, 110, .right),
+            ("output", "输出", 72, 58, .right),
+            ("total", "总消耗", 88, 68, .right),
+            ("share", "占比", 95, 78, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -680,11 +869,12 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             col.width = width
             col.minWidth = minW
             col.resizingMask = [.userResizingMask, .autoresizingMask]
-            col.headerCell.alignment = align
+            let cell = FlatTableHeaderCell(textCell: title)
+            cell.alignment = align
+            col.headerCell = cell
             tableView.addTableColumn(col)
         }
         
-        tableView.sizeToFit()
         scrollView.documentView = tableView
         
         // Empty State View
@@ -709,17 +899,12 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         statusLabel.textColor = .secondaryLabelColor
         bottomView.addSubview(statusLabel)
         
-        refreshButton = NSButton(title: "刷新数据", target: self, action: #selector(refreshClicked(_:)))
+        refreshButton = FlatActionPillButton(title: "刷新数据", symbol: "arrow.clockwise", isPrimary: false, target: self, action: #selector(refreshClicked(_:)))
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
-        refreshButton.bezelStyle = .rounded
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")?.withSymbolConfiguration(config)
-        refreshButton.imagePosition = .imageLeading
         bottomView.addSubview(refreshButton)
         
-        let closeButton = NSButton(title: "关闭", target: self, action: #selector(closeClicked(_:)))
+        closeButton = FlatActionPillButton(title: "关闭", symbol: nil, isPrimary: false, target: self, action: #selector(closeClicked(_:)))
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.bezelStyle = .rounded
         bottomView.addSubview(closeButton)
         
         // AutoLayout Constraints
@@ -728,16 +913,16 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             headerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
             headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
             headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            headerView.heightAnchor.constraint(equalToConstant: 40),
+            headerView.heightAnchor.constraint(equalToConstant: 44),
             
-            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 2),
+            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 1),
             headerTitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             
             headerSubtitle.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 3),
             headerSubtitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             
-            segmentedControl.centerYAnchor.constraint(equalTo: headerTitle.centerYAnchor),
-            segmentedControl.trailingAnchor.constraint(equalTo: headerView.trailingAnchor),
+            pillBar.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            pillBar.trailingAnchor.constraint(equalTo: headerView.trailingAnchor),
             
             // Cards Row
             cardStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
@@ -767,7 +952,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             bottomView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             bottomView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             bottomView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            bottomView.heightAnchor.constraint(equalToConstant: 42),
+            bottomView.heightAnchor.constraint(equalToConstant: 46),
             
             bottomSeparator.topAnchor.constraint(equalTo: bottomView.topAnchor),
             bottomSeparator.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor),
@@ -779,9 +964,13 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             
             refreshButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -10),
             refreshButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
+            refreshButton.heightAnchor.constraint(equalToConstant: 28),
+            refreshButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
             
             closeButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor, constant: -24),
-            closeButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor)
+            closeButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
+            closeButton.heightAnchor.constraint(equalToConstant: 28),
+            closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
         ])
     }
     
@@ -823,12 +1012,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     
     func selectTimeWindow(_ index: Int) {
         guard index >= 0 && index < TimeWindow.allCases.count else { return }
-        segmentedControl.selectedSegment = index
-        timeWindowChanged(segmentedControl)
-    }
-    
-    @objc func timeWindowChanged(_ sender: NSSegmentedControl) {
-        let index = sender.selectedSegment
+        pillBar.setSelectedIndex(index)
         if let window = TimeWindow(rawValue: index) {
             self.currentWindow = window
             self.filterAndDisplay()
@@ -1020,6 +1204,10 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         default:
             return nil
         }
+    }
+    
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        return ModernTableRowView()
     }
 }
 
