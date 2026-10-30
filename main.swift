@@ -80,11 +80,11 @@ enum TimeWindow: Int, CaseIterable {
     
     var title: String {
         switch self {
-        case .fiveHours: return "5h 窗口"
-        case .today: return "当天 (24h)"
-        case .sevenDays: return "近 7 天"
-        case .thirtyDays: return "近 30 天"
-        case .allTime: return "全部时间"
+        case .fiveHours: return "5 小时"
+        case .today: return "当天"
+        case .sevenDays: return "7 天"
+        case .thirtyDays: return "30 天"
+        case .allTime: return "全部"
         }
     }
     
@@ -110,6 +110,10 @@ class TokenStatsManager {
         homeDir.appendingPathComponent(".gemini/antigravity-cli/conversations")
     }
     
+    private var memoryCacheRecords: [TokenRecord] = []
+    private var modelMapCache: [String: [Int: String]] = [:]
+    private var lastScanTime: Date? = nil
+    
     private let isoDateFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
@@ -122,12 +126,20 @@ class TokenStatsManager {
         return f
     }()
     
+    var currentRecords: [TokenRecord] {
+        return memoryCacheRecords
+    }
+    
     func parseDate(_ str: String?) -> Date? {
         guard let s = str, !s.isEmpty else { return nil }
         return isoDateFormatter.date(from: s) ?? isoDateFractionFormatter.date(from: s)
     }
     
-    func scanAllRecords() -> [TokenRecord] {
+    func scanAllRecords(forceRefresh: Bool = false) -> [TokenRecord] {
+        if !forceRefresh, !memoryCacheRecords.isEmpty, let last = lastScanTime, Date().timeIntervalSince(last) < 20.0 {
+            return memoryCacheRecords
+        }
+        
         var records: [TokenRecord] = []
         let fileManager = FileManager.default
         guard let dbFiles = try? fileManager.contentsOfDirectory(at: convDir, includingPropertiesForKeys: nil) else {
@@ -139,7 +151,7 @@ class TokenStatsManager {
             let transcriptURL = brainDir.appendingPathComponent(convId).appendingPathComponent(".system_generated/logs/transcript.jsonl")
             guard fileManager.fileExists(atPath: transcriptURL.path) else { continue }
             
-            let modelMap = loadModelMap(from: dbURL)
+            let modelMap = getModelMap(for: convId, dbURL: dbURL)
             guard let fileHandle = try? FileHandle(forReadingFrom: transcriptURL) else { continue }
             defer { try? fileHandle.close() }
             
@@ -172,7 +184,34 @@ class TokenStatsManager {
                 genIdx += 1
             }
         }
+        
+        self.memoryCacheRecords = records
+        self.lastScanTime = Date()
         return records
+    }
+    
+    private static let knownPatterns: [(Data, String)] = [
+        ("Claude Sonnet 4.6 (Thinking)".data(using: .utf8)!, "Claude Sonnet 4.6 (Thinking)"),
+        ("Claude Sonnet 4.6".data(using: .utf8)!, "Claude Sonnet 4.6"),
+        ("Claude Opus 4.6 (Thinking)".data(using: .utf8)!, "Claude Opus 4.6 (Thinking)"),
+        ("Claude Opus 4.6".data(using: .utf8)!, "Claude Opus 4.6"),
+        ("Gemini 3.8 Flash (High)".data(using: .utf8)!, "Gemini 3.8 Flash (High)"),
+        ("Gemini 3.8 Flash (Medium)".data(using: .utf8)!, "Gemini 3.8 Flash (Medium)"),
+        ("Gemini 3.8 Flash (Low)".data(using: .utf8)!, "Gemini 3.8 Flash (Low)"),
+        ("Gemini 3.5 Flash (High)".data(using: .utf8)!, "Gemini 3.5 Flash (High)"),
+        ("Gemini 3.5 Flash".data(using: .utf8)!, "Gemini 3.5 Flash"),
+        ("GPT-OSS 120B (Medium)".data(using: .utf8)!, "GPT-OSS 120B (Medium)"),
+        ("GPT-OSS 120B".data(using: .utf8)!, "GPT-OSS 120B"),
+        ("Gemini 4 Argon".data(using: .utf8)!, "Gemini 4 Argon")
+    ]
+    
+    private func getModelMap(for convId: String, dbURL: URL) -> [Int: String] {
+        if let cached = modelMapCache[convId] {
+            return cached
+        }
+        let map = loadModelMap(from: dbURL)
+        modelMapCache[convId] = map
+        return map
     }
     
     private func loadModelMap(from dbURL: URL) -> [Int: String] {
@@ -186,8 +225,8 @@ class TokenStatsManager {
                     let idx = Int(sqlite3_column_int(stmt, 0))
                     if let blobPtr = sqlite3_column_blob(stmt, 1) {
                         let bytes = Int(sqlite3_column_bytes(stmt, 1))
-                        let data = Data(bytes: blobPtr, count: bytes)
-                        map[idx] = extractModelName(from: data)
+                        let d = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: blobPtr), count: bytes, deallocator: .none)
+                        map[idx] = extractModelName(from: d)
                     }
                 }
                 sqlite3_finalize(stmt)
@@ -198,28 +237,288 @@ class TokenStatsManager {
     }
     
     private func extractModelName(from data: Data) -> String {
-        if let str = String(data: data, encoding: .isoLatin1) {
-            let patterns = [
-                "Gemini 3.8 Flash (High)",
-                "Gemini 3.8 Flash (Medium)",
-                "Gemini 3.8 Flash (Low)",
-                "Gemini 3.5 Flash (High)",
-                "Gemini 3.5 Flash",
-                "Claude Sonnet 4.6 (Thinking)",
-                "Claude Sonnet 4.6",
-                "Claude Opus 4.6 (Thinking)",
-                "Claude Opus 4.6",
-                "GPT-OSS 120B (Medium)",
-                "GPT-OSS 120B",
-                "Gemini 4 Argon"
-            ]
-            for p in patterns {
-                if str.contains(p) {
-                    return p
-                }
+        for (patternData, name) in TokenStatsManager.knownPatterns {
+            if data.range(of: patternData) != nil {
+                return name
             }
         }
         return "Gemini 3.8 Flash (Medium)"
+    }
+}
+
+// MARK: - Modern UI Components
+
+class MetricCardView: NSView {
+    private let dotView = NSBox()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let valueLabel = NSTextField(labelWithString: "--")
+    private let subLabel = NSTextField(labelWithString: "--")
+    private let container = NSBox()
+    
+    init(title: String, tint: NSColor) {
+        super.init(frame: .zero)
+        setup(title: title, tint: tint)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    private func setup(title: String, tint: NSColor) {
+        container.boxType = .custom
+        container.cornerRadius = 10
+        container.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65)
+        container.borderColor = NSColor.separatorColor.withAlphaComponent(0.14)
+        container.borderWidth = 0.5
+        container.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(container)
+        
+        dotView.boxType = .custom
+        dotView.cornerRadius = 3.5
+        dotView.fillColor = tint
+        dotView.borderWidth = 0
+        dotView.translatesAutoresizingMaskIntoConstraints = false
+        container.contentView?.addSubview(dotView)
+        
+        titleLabel.stringValue = title
+        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.contentView?.addSubview(titleLabel)
+        
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .bold)
+        valueLabel.textColor = .labelColor
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.contentView?.addSubview(valueLabel)
+        
+        subLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        subLabel.textColor = .tertiaryLabelColor
+        subLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.contentView?.addSubview(subLabel)
+        
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: topAnchor),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: bottomAnchor),
+            
+            dotView.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
+            dotView.topAnchor.constraint(equalTo: container.contentView!.topAnchor, constant: 12),
+            dotView.widthAnchor.constraint(equalToConstant: 7),
+            dotView.heightAnchor.constraint(equalToConstant: 7),
+            
+            titleLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 7),
+            titleLabel.centerYAnchor.constraint(equalTo: dotView.centerYAnchor),
+            
+            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            valueLabel.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
+            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.contentView!.trailingAnchor, constant: -8),
+            
+            subLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
+            subLabel.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
+            subLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.contentView!.trailingAnchor, constant: -8)
+        ])
+    }
+    
+    func update(value: String, sub: String, valueColor: NSColor = .labelColor) {
+        valueLabel.stringValue = value
+        valueLabel.textColor = valueColor
+        subLabel.stringValue = sub
+    }
+}
+
+class ModelCellView: NSTableCellView {
+    let iconBadge = NSBox()
+    let iconView = NSImageView()
+    let titleLabel = NSTextField(labelWithString: "")
+    
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
+    
+    private func setup() {
+        iconBadge.boxType = .custom
+        iconBadge.cornerRadius = 6
+        iconBadge.borderWidth = 0
+        iconBadge.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconBadge)
+        
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconBadge.contentView?.addSubview(iconView)
+        
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
+        
+        if let bcv = iconBadge.contentView {
+            NSLayoutConstraint.activate([
+                iconView.centerXAnchor.constraint(equalTo: bcv.centerXAnchor),
+                iconView.centerYAnchor.constraint(equalTo: bcv.centerYAnchor)
+            ])
+        }
+        
+        NSLayoutConstraint.activate([
+            iconBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            iconBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconBadge.widthAnchor.constraint(equalToConstant: 24),
+            iconBadge.heightAnchor.constraint(equalToConstant: 24),
+            
+            titleLabel.leadingAnchor.constraint(equalTo: iconBadge.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+    
+    func configure(modelName: String) {
+        titleLabel.stringValue = modelName
+        let lower = modelName.lowercased()
+        let symName: String
+        let tint: NSColor
+        if lower.contains("gemini") {
+            symName = "sparkles"
+            tint = .systemBlue
+        } else if lower.contains("claude") {
+            symName = "brain.head.profile"
+            tint = .systemOrange
+        } else if lower.contains("gpt") {
+            symName = "bolt.fill"
+            tint = .systemGreen
+        } else {
+            symName = "cpu"
+            tint = .secondaryLabelColor
+        }
+        iconBadge.fillColor = tint.withAlphaComponent(0.12)
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        iconView.image = NSImage(systemSymbolName: symName, accessibilityDescription: modelName)?.withSymbolConfiguration(config)
+        iconView.contentTintColor = tint
+    }
+}
+
+class CacheCellView: NSTableCellView {
+    let valueLabel = NSTextField(labelWithString: "")
+    let pillBadge = NSBox()
+    let pillLabel = NSTextField(labelWithString: "")
+    
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
+    
+    private func setup() {
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        valueLabel.alignment = .right
+        valueLabel.textColor = .labelColor
+        addSubview(valueLabel)
+        
+        pillBadge.boxType = .custom
+        pillBadge.cornerRadius = 4
+        pillBadge.borderWidth = 0
+        pillBadge.fillColor = NSColor.systemGreen.withAlphaComponent(0.14)
+        pillBadge.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pillBadge)
+        
+        pillLabel.translatesAutoresizingMaskIntoConstraints = false
+        pillLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold)
+        pillLabel.textColor = .systemGreen
+        pillLabel.alignment = .center
+        pillBadge.contentView?.addSubview(pillLabel)
+        
+        if let bcv = pillBadge.contentView {
+            NSLayoutConstraint.activate([
+                pillLabel.leadingAnchor.constraint(equalTo: bcv.leadingAnchor, constant: 4),
+                pillLabel.trailingAnchor.constraint(equalTo: bcv.trailingAnchor, constant: -4),
+                pillLabel.centerYAnchor.constraint(equalTo: bcv.centerYAnchor)
+            ])
+        }
+        
+        NSLayoutConstraint.activate([
+            pillBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            pillBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pillBadge.heightAnchor.constraint(equalToConstant: 18),
+            
+            valueLabel.trailingAnchor.constraint(equalTo: pillBadge.leadingAnchor, constant: -6),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            valueLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 2)
+        ])
+    }
+    
+    func configure(tokens: Int64, ratio: Double, formatter: NumberFormatter) {
+        valueLabel.stringValue = formatter.string(from: NSNumber(value: tokens)) ?? "0"
+        pillLabel.stringValue = String(format: "%.1f%%", ratio)
+        pillBadge.isHidden = (tokens == 0)
+    }
+}
+
+class MetricTextCellView: NSTableCellView {
+    let label = NSTextField(labelWithString: "")
+    
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
+    
+    private func setup() {
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        label.alignment = .right
+        label.textColor = .labelColor
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+        
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+    
+    func configure(text: String, isBold: Bool = false, color: NSColor = .labelColor) {
+        label.stringValue = text
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: isBold ? .bold : .regular)
+        label.textColor = color
+    }
+}
+
+class ShareCellView: NSTableCellView {
+    let progressBar = ProgressBarView()
+    let percentLabel = NSTextField(labelWithString: "")
+    
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
+    
+    private func setup() {
+        progressBar.translatesAutoresizingMaskIntoConstraints = false
+        progressBar.color = .systemBlue
+        addSubview(progressBar)
+        
+        percentLabel.translatesAutoresizingMaskIntoConstraints = false
+        percentLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        percentLabel.textColor = .secondaryLabelColor
+        percentLabel.alignment = .right
+        addSubview(percentLabel)
+        
+        NSLayoutConstraint.activate([
+            percentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            percentLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            percentLabel.widthAnchor.constraint(equalToConstant: 42),
+            
+            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            progressBar.trailingAnchor.constraint(equalTo: percentLabel.leadingAnchor, constant: -6),
+            progressBar.centerYAnchor.constraint(equalTo: centerYAnchor),
+            progressBar.heightAnchor.constraint(equalToConstant: 4)
+        ])
+    }
+    
+    func configure(share: Double) {
+        progressBar.progress = share / 100.0
+        percentLabel.stringValue = String(format: "%.1f%%", share)
     }
 }
 
@@ -230,7 +529,7 @@ class AnalyticsWindow: NSWindow {
         if event.modifierFlags.contains(.command) {
             if event.charactersIgnoringModifiers == "r" {
                 if let wc = self.windowController as? TokenStatsWindowController {
-                    wc.loadData()
+                    wc.loadData(forceRefresh: true)
                     return true
                 }
             } else if event.charactersIgnoringModifiers == "w" {
@@ -259,34 +558,28 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     private var tableView: NSTableView!
     private var emptyStateView: NSView!
     
-    // Metric Card Value Labels
-    private var totalTokensValLabel: NSTextField!
-    private var totalTokensSubLabel: NSTextField!
-    
-    private var cacheRatioValLabel: NSTextField!
-    private var cacheRatioSubLabel: NSTextField!
-    
-    private var outputValLabel: NSTextField!
-    private var outputSubLabel: NSTextField!
-    
-    private var totalCallsValLabel: NSTextField!
-    private var totalCallsSubLabel: NSTextField!
+    // Metric Cards
+    private var totalTokensCard: MetricCardView!
+    private var cacheRatioCard: MetricCardView!
+    private var outputCard: MetricCardView!
+    private var totalCallsCard: MetricCardView!
     
     private var statusLabel: NSTextField!
     private var refreshButton: NSButton!
     
     convenience init() {
         let window = AnalyticsWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 860, height: 570),
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 580),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Antigravity Token Analytics"
+        window.title = ""
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.center()
-        window.minSize = NSSize(width: 780, height: 480)
+        window.minSize = NSSize(width: 800, height: 500)
         self.init(window: window)
         setupUI()
     }
@@ -307,13 +600,13 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         headerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(headerView)
         
-        let headerTitle = NSTextField(labelWithString: "Token 用量与成本分析")
+        let headerTitle = NSTextField(labelWithString: "Token 用量分析")
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
+        headerTitle.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         headerTitle.textColor = .labelColor
         headerView.addSubview(headerTitle)
         
-        let headerSubtitle = NSTextField(labelWithString: "Antigravity 智能体代码辅助 Token 消耗与 Prompt 缓存统计")
+        let headerSubtitle = NSTextField(labelWithString: "Antigravity 智能体代码辅助统计与 Prompt 缓存分析")
         headerSubtitle.translatesAutoresizingMaskIntoConstraints = false
         headerSubtitle.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         headerSubtitle.textColor = .secondaryLabelColor
@@ -334,66 +627,71 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(cardStack)
         
-        let (card1, val1, sub1) = makeMetricCard(symbol: "chart.bar.fill", title: "总处理 Token", tint: .systemBlue)
-        let (card2, val2, sub2) = makeMetricCard(symbol: "bolt.shield.fill", title: "缓存命中率 (Cache)", tint: .systemGreen)
-        let (card3, val3, sub3) = makeMetricCard(symbol: "arrow.up.right.circle.fill", title: "生成输出 (Output)", tint: .systemPurple)
-        let (card4, val4, sub4) = makeMetricCard(symbol: "waveform.path.ecg", title: "模型调用次数", tint: .systemOrange)
+        totalTokensCard = MetricCardView(title: "总处理 Token", tint: .systemBlue)
+        cacheRatioCard = MetricCardView(title: "缓存命中率", tint: .systemGreen)
+        outputCard = MetricCardView(title: "模型生成输出", tint: .systemPurple)
+        totalCallsCard = MetricCardView(title: "调用总次数", tint: .systemOrange)
         
-        self.totalTokensValLabel = val1
-        self.totalTokensSubLabel = sub1
-        self.cacheRatioValLabel = val2
-        self.cacheRatioSubLabel = sub2
-        self.outputValLabel = val3
-        self.outputSubLabel = sub3
-        self.totalCallsValLabel = val4
-        self.totalCallsSubLabel = sub4
+        cardStack.addArrangedSubview(totalTokensCard)
+        cardStack.addArrangedSubview(cacheRatioCard)
+        cardStack.addArrangedSubview(outputCard)
+        cardStack.addArrangedSubview(totalCallsCard)
         
-        cardStack.addArrangedSubview(card1)
-        cardStack.addArrangedSubview(card2)
-        cardStack.addArrangedSubview(card3)
-        cardStack.addArrangedSubview(card4)
+        // 3. Table Container Card
+        let tableContainer = NSBox()
+        tableContainer.boxType = .custom
+        tableContainer.cornerRadius = 10
+        tableContainer.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65)
+        tableContainer.borderColor = NSColor.separatorColor.withAlphaComponent(0.14)
+        tableContainer.borderWidth = 0.5
+        tableContainer.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(tableContainer)
         
-        // 3. Table View
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
-        contentView.addSubview(scrollView)
+        tableContainer.contentView?.addSubview(scrollView)
         
         tableView = NSTableView()
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.gridStyleMask = [.solidHorizontalGridLineMask]
-        tableView.rowHeight = 34
+        tableView.usesAlternatingRowBackgroundColors = false
+        tableView.backgroundColor = .clear
+        tableView.gridStyleMask = [] // Clean modern minimalist list style
+        tableView.rowHeight = 36
+        tableView.intercellSpacing = NSSize(width: 10, height: 2)
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         tableView.dataSource = self
         tableView.delegate = self
         
-        let columns: [(String, String, CGFloat, NSTextAlignment)] = [
-            ("model", "模型 (Model)", 230, .left),
-            ("calls", "调用次数", 75, .right),
-            ("input", "输入 Tokens", 105, .right),
-            ("cache", "缓存读取 (Prompt Cache)", 165, .right),
-            ("output", "输出 Tokens", 95, .right),
-            ("total", "总计 Tokens", 120, .right),
-            ("share", "占比 (Share)", 70, .right)
+        let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
+            ("model", "模型 (Model)", 190, 150, .left),
+            ("calls", "调用", 48, 42, .right),
+            ("input", "输入", 72, 60, .right),
+            ("cache", "Prompt 缓存", 140, 115, .right),
+            ("output", "输出", 72, 60, .right),
+            ("total", "总消耗", 88, 70, .right),
+            ("share", "占比", 98, 80, .right)
         ]
         
-        for (colId, title, width, align) in columns {
+        for (colId, title, width, minW, align) in columns {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(colId))
             col.title = title
             col.width = width
-            col.minWidth = 50
+            col.minWidth = minW
+            col.resizingMask = [.userResizingMask, .autoresizingMask]
             col.headerCell.alignment = align
             tableView.addTableColumn(col)
         }
         
+        tableView.sizeToFit()
         scrollView.documentView = tableView
         
         // Empty State View
         emptyStateView = makeEmptyStateView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
         emptyStateView.isHidden = true
-        contentView.addSubview(emptyStateView)
+        tableContainer.contentView?.addSubview(emptyStateView)
         
         // 4. Bottom Controls Bar
         let bottomView = NSView()
@@ -426,36 +724,42 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         
         // AutoLayout Constraints
         NSLayoutConstraint.activate([
-            // Header (leaving space for window traffic lights)
-            headerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 36),
-            headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            // Header (avoiding traffic lights at top-left)
+            headerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
+            headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
+            headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
             headerView.heightAnchor.constraint(equalToConstant: 40),
             
-            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor),
+            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 2),
             headerTitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             
-            headerSubtitle.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 2),
+            headerSubtitle.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 3),
             headerSubtitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             
-            segmentedControl.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            segmentedControl.centerYAnchor.constraint(equalTo: headerTitle.centerYAnchor),
             segmentedControl.trailingAnchor.constraint(equalTo: headerView.trailingAnchor),
             
             // Cards Row
             cardStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
-            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            cardStack.heightAnchor.constraint(equalToConstant: 82),
+            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+            cardStack.heightAnchor.constraint(equalToConstant: 78),
             
-            // Table
-            scrollView.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 14),
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            scrollView.bottomAnchor.constraint(equalTo: bottomView.topAnchor, constant: -8),
+            // Table Container Card
+            tableContainer.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 14),
+            tableContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            tableContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+            tableContainer.bottomAnchor.constraint(equalTo: bottomView.topAnchor, constant: -8),
             
-            // Empty State View (centered over table)
-            emptyStateView.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            // ScrollView inside Table Container
+            scrollView.topAnchor.constraint(equalTo: tableContainer.contentView!.topAnchor, constant: 8),
+            scrollView.leadingAnchor.constraint(equalTo: tableContainer.contentView!.leadingAnchor, constant: 10),
+            scrollView.trailingAnchor.constraint(equalTo: tableContainer.contentView!.trailingAnchor, constant: -10),
+            scrollView.bottomAnchor.constraint(equalTo: tableContainer.contentView!.bottomAnchor, constant: -8),
+            
+            // Empty State View (centered over table container)
+            emptyStateView.centerXAnchor.constraint(equalTo: tableContainer.centerXAnchor),
+            emptyStateView.centerYAnchor.constraint(equalTo: tableContainer.centerYAnchor),
             emptyStateView.widthAnchor.constraint(equalToConstant: 320),
             emptyStateView.heightAnchor.constraint(equalToConstant: 120),
             
@@ -463,20 +767,20 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             bottomView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             bottomView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             bottomView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            bottomView.heightAnchor.constraint(equalToConstant: 44),
+            bottomView.heightAnchor.constraint(equalToConstant: 42),
             
             bottomSeparator.topAnchor.constraint(equalTo: bottomView.topAnchor),
             bottomSeparator.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor),
             bottomSeparator.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor),
             
-            statusLabel.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor, constant: 20),
+            statusLabel.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor, constant: 24),
             statusLabel.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: refreshButton.leadingAnchor, constant: -12),
             
             refreshButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -10),
             refreshButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
             
-            closeButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor, constant: -20),
+            closeButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor, constant: -24),
             closeButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor)
         ])
     }
@@ -497,7 +801,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         label.alignment = .center
         view.addSubview(label)
         
-        let sub = NSTextField(labelWithString: "请在右上角切换到「当天」或「全部时间」查看历史数据")
+        let sub = NSTextField(labelWithString: "可在右上角切换到「当天」或「全部」查看历史数据")
         sub.translatesAutoresizingMaskIntoConstraints = false
         sub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         sub.textColor = .tertiaryLabelColor
@@ -517,78 +821,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         return view
     }
     
-    private func makeMetricCard(symbol: String, title: String, tint: NSColor) -> (NSBox, NSTextField, NSTextField) {
-        let box = NSBox()
-        box.boxType = .custom
-        box.cornerRadius = 10
-        box.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.55)
-        box.borderColor = NSColor.separatorColor.withAlphaComponent(0.20)
-        box.borderWidth = 0.5
-        
-        let iconBadge = NSBox()
-        iconBadge.boxType = .custom
-        iconBadge.cornerRadius = 6
-        iconBadge.fillColor = tint.withAlphaComponent(0.12)
-        iconBadge.borderWidth = 0
-        iconBadge.translatesAutoresizingMaskIntoConstraints = false
-        box.contentView?.addSubview(iconBadge)
-        
-        let iconView = NSImageView()
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(config)
-        iconView.contentTintColor = tint
-        iconBadge.contentView?.addSubview(iconView)
-        
-        if let badgeCv = iconBadge.contentView {
-            NSLayoutConstraint.activate([
-                iconView.centerXAnchor.constraint(equalTo: badgeCv.centerXAnchor),
-                iconView.centerYAnchor.constraint(equalTo: badgeCv.centerYAnchor)
-            ])
-        }
-        
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        titleLabel.textColor = .secondaryLabelColor
-        box.contentView?.addSubview(titleLabel)
-        
-        let valueLabel = NSTextField(labelWithString: "--")
-        valueLabel.translatesAutoresizingMaskIntoConstraints = false
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .bold)
-        valueLabel.textColor = .labelColor
-        box.contentView?.addSubview(valueLabel)
-        
-        let subLabel = NSTextField(labelWithString: "--")
-        subLabel.translatesAutoresizingMaskIntoConstraints = false
-        subLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        subLabel.textColor = .tertiaryLabelColor
-        box.contentView?.addSubview(subLabel)
-        
-        if let cv = box.contentView {
-            NSLayoutConstraint.activate([
-                iconBadge.topAnchor.constraint(equalTo: cv.topAnchor, constant: 10),
-                iconBadge.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
-                iconBadge.widthAnchor.constraint(equalToConstant: 22),
-                iconBadge.heightAnchor.constraint(equalToConstant: 22),
-                
-                titleLabel.centerYAnchor.constraint(equalTo: iconBadge.centerYAnchor),
-                titleLabel.leadingAnchor.constraint(equalTo: iconBadge.trailingAnchor, constant: 8),
-                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8),
-                
-                valueLabel.topAnchor.constraint(equalTo: iconBadge.bottomAnchor, constant: 6),
-                valueLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
-                valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8),
-                
-                subLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
-                subLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
-                subLabel.trailingAnchor.constraint(lessThanOrEqualTo: cv.trailingAnchor, constant: -8)
-            ])
-        }
-        
-        return (box, valueLabel, subLabel)
-    }
-    
     func selectTimeWindow(_ index: Int) {
         guard index >= 0 && index < TimeWindow.allCases.count else { return }
         segmentedControl.selectedSegment = index
@@ -604,19 +836,25 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     }
     
     @objc func refreshClicked(_ sender: Any?) {
-        loadData()
+        loadData(forceRefresh: true)
     }
     
     @objc func closeClicked(_ sender: Any?) {
         self.window?.close()
     }
     
-    func loadData() {
+    func loadData(forceRefresh: Bool = false) {
+        // Fast path: if memory cache exists and not forced, display immediately
+        if !forceRefresh && !TokenStatsManager.shared.currentRecords.isEmpty {
+            self.allRecords = TokenStatsManager.shared.currentRecords
+            self.filterAndDisplay()
+        }
+        
         refreshButton.isEnabled = false
-        statusLabel.stringValue = "正在扫描本地所有对话记录..."
+        statusLabel.stringValue = "正在同步本地对话数据..."
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let scanned = TokenStatsManager.shared.scanAllRecords()
+            let scanned = TokenStatsManager.shared.scanAllRecords(forceRefresh: forceRefresh)
             
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -675,34 +913,33 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         formatter.numberStyle = .decimal
         
         // 1. Total Tokens
-        self.totalTokensValLabel.stringValue = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
-        self.totalTokensSubLabel.stringValue = formatCompactNumber(totalAll) + " tokens 处理"
+        let totStr = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
+        totalTokensCard.update(value: totStr, sub: formatCompactNumber(totalAll) + " tokens 处理总量")
         
         // 2. Cache Hit Ratio
         let promptTokens = totalIn + totalCache
         if promptTokens > 0 {
             let ratio = Double(totalCache) / Double(promptTokens) * 100.0
-            self.cacheRatioValLabel.stringValue = String(format: "%.1f%%", ratio)
-            self.cacheRatioValLabel.textColor = .systemGreen
-            self.cacheRatioSubLabel.stringValue = "已缓存: " + formatCompactNumber(totalCache) + " tokens"
+            cacheRatioCard.update(
+                value: String(format: "%.1f%%", ratio),
+                sub: "省下 " + formatCompactNumber(totalCache) + " tokens 缓存",
+                valueColor: .systemGreen
+            )
         } else {
-            self.cacheRatioValLabel.stringValue = "0.0%"
-            self.cacheRatioValLabel.textColor = .labelColor
-            self.cacheRatioSubLabel.stringValue = "无 Prompt 缓存"
+            cacheRatioCard.update(value: "0.0%", sub: "无 Prompt 缓存", valueColor: .labelColor)
         }
         
         // 3. Output Tokens
-        self.outputValLabel.stringValue = formatter.string(from: NSNumber(value: totalOut)) ?? "\(totalOut)"
+        let outStr = formatter.string(from: NSNumber(value: totalOut)) ?? "\(totalOut)"
         let outShare = totalAll > 0 ? (Double(totalOut) / Double(totalAll) * 100.0) : 0.0
-        self.outputSubLabel.stringValue = String(format: "占总用量 %.1f%%", outShare)
+        outputCard.update(value: outStr, sub: String(format: "占总用量 %.1f%%", outShare))
         
         // 4. Total Calls
-        self.totalCallsValLabel.stringValue = "\(totalCalls) 次"
         if totalCalls > 0 {
             let avgPerCall = totalAll / Int64(totalCalls)
-            self.totalCallsSubLabel.stringValue = "均次: " + formatCompactNumber(avgPerCall) + " tokens"
+            totalCallsCard.update(value: "\(totalCalls) 次", sub: "均次 " + formatCompactNumber(avgPerCall) + " tokens")
         } else {
-            self.totalCallsSubLabel.stringValue = "当前窗口暂无调用"
+            totalCallsCard.update(value: "0 次", sub: "当前窗口暂无调用")
         }
         
         // Status bar
@@ -736,102 +973,53 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         formatter.numberStyle = .decimal
         let totalAcrossAll = displayedStats.reduce(0) { $0 + $1.totalTokens }
         
-        if colId == "model" {
-            let container = NSView()
-            
-            let iconBadge = NSBox()
-            iconBadge.boxType = .custom
-            iconBadge.cornerRadius = 4
-            iconBadge.borderWidth = 0
-            iconBadge.translatesAutoresizingMaskIntoConstraints = false
-            
-            let iconView = NSImageView()
-            iconView.translatesAutoresizingMaskIntoConstraints = false
-            let iconConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
-            
-            let lower = item.modelName.lowercased()
-            let symName: String
-            let tint: NSColor
-            if lower.contains("gemini") {
-                symName = "sparkles"
-                tint = .systemBlue
-            } else if lower.contains("claude") {
-                symName = "brain.head.profile"
-                tint = .systemOrange
-            } else if lower.contains("gpt") {
-                symName = "bolt.fill"
-                tint = .systemGreen
-            } else {
-                symName = "cpu"
-                tint = .secondaryLabelColor
-            }
-            
-            iconBadge.fillColor = tint.withAlphaComponent(0.12)
-            iconView.image = NSImage(systemSymbolName: symName, accessibilityDescription: item.modelName)?.withSymbolConfiguration(iconConfig)
-            iconView.contentTintColor = tint
-            iconBadge.contentView?.addSubview(iconView)
-            
-            if let bcv = iconBadge.contentView {
-                NSLayoutConstraint.activate([
-                    iconView.centerXAnchor.constraint(equalTo: bcv.centerXAnchor),
-                    iconView.centerYAnchor.constraint(equalTo: bcv.centerYAnchor)
-                ])
-            }
-            container.addSubview(iconBadge)
-            
-            let label = NSTextField(labelWithString: item.modelName)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-            label.textColor = .labelColor
-            label.lineBreakMode = .byTruncatingTail
-            container.addSubview(label)
-            
-            NSLayoutConstraint.activate([
-                iconBadge.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
-                iconBadge.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                iconBadge.widthAnchor.constraint(equalToConstant: 18),
-                iconBadge.heightAnchor.constraint(equalToConstant: 18),
-                
-                label.leadingAnchor.constraint(equalTo: iconBadge.trailingAnchor, constant: 8),
-                label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
-                label.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-            ])
-            return container
-        }
-        
-        let cell = NSTextField(labelWithString: "")
-        cell.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        cell.lineBreakMode = .byTruncatingTail
-        
         switch colId {
+        case "model":
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("ModelCell"), owner: self) as? ModelCellView) ?? ModelCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("ModelCell")
+            cell.configure(modelName: item.modelName)
+            return cell
+            
         case "calls":
-            cell.stringValue = "\(item.callCount)"
-            cell.alignment = .right
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("CallsCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("CallsCell")
+            cell.configure(text: "\(item.callCount)")
+            return cell
+            
         case "input":
-            cell.stringValue = formatter.string(from: NSNumber(value: item.inputTokens)) ?? "0"
-            cell.alignment = .right
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("InputCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("InputCell")
+            cell.configure(text: formatter.string(from: NSNumber(value: item.inputTokens)) ?? "0")
+            return cell
+            
         case "cache":
-            let cacheStr = formatter.string(from: NSNumber(value: item.cacheReadTokens)) ?? "0"
-            cell.stringValue = "\(cacheStr)  (\(String(format: "%.1f%%", item.cacheRatio)))"
-            cell.textColor = .systemGreen
-            cell.alignment = .right
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("CacheCell"), owner: self) as? CacheCellView) ?? CacheCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("CacheCell")
+            cell.configure(tokens: item.cacheReadTokens, ratio: item.cacheRatio, formatter: formatter)
+            return cell
+            
         case "output":
-            cell.stringValue = formatter.string(from: NSNumber(value: item.outputTokens)) ?? "0"
-            cell.alignment = .right
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("OutputCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("OutputCell")
+            cell.configure(text: formatter.string(from: NSNumber(value: item.outputTokens)) ?? "0")
+            return cell
+            
         case "total":
-            cell.stringValue = formatter.string(from: NSNumber(value: item.totalTokens)) ?? "0"
-            cell.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
-            cell.alignment = .right
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("TotalCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("TotalCell")
+            cell.configure(text: formatter.string(from: NSNumber(value: item.totalTokens)) ?? "0", isBold: true)
+            return cell
+            
         case "share":
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("ShareCell"), owner: self) as? ShareCellView) ?? ShareCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("ShareCell")
             let share = totalAcrossAll > 0 ? (Double(item.totalTokens) / Double(totalAcrossAll) * 100.0) : 0.0
-            cell.stringValue = String(format: "%.1f%%", share)
-            cell.alignment = .right
-            cell.textColor = .secondaryLabelColor
+            cell.configure(share: share)
+            return cell
+            
         default:
-            break
+            return nil
         }
-        
-        return cell
     }
 }
 
@@ -851,7 +1039,7 @@ class ProgressBarView: NSView {
         
         // Draw Track
         let trackPath = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-        let trackColor = NSColor.quaternaryLabelColor
+        let trackColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.2)
         trackColor.set()
         trackPath.fill()
         
@@ -1079,6 +1267,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         // Trigger first fetch
         fetchStatus()
+        
+        // Background scan tokens in advance so dashboard opens instantaneously
+        DispatchQueue.global(qos: .background).async {
+            _ = TokenStatsManager.shared.scanAllRecords()
+        }
+        
+        // Command-line flag to open dashboard immediately (useful for testing and previews)
+        if CommandLine.arguments.contains("--dashboard") {
+            openTokenStatsDashboard(nil)
+        }
     }
     
     func menuWillOpen(_ menu: NSMenu) {
@@ -1135,7 +1333,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tokenStatsWindowController?.showWindow(self)
         tokenStatsWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        tokenStatsWindowController?.loadData()
+        tokenStatsWindowController?.loadData(forceRefresh: false)
     }
     
     @objc func quitTriggered(_ sender: Any?) {
