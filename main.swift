@@ -39,6 +39,37 @@ struct EndpointTarget: Equatable {
     let port: Int
 }
 
+struct QuotaSummaryResponse: Codable {
+    let response: QuotaSummaryData?
+}
+
+struct QuotaSummaryData: Codable {
+    let groups: [QuotaGroup]?
+}
+
+struct QuotaGroup: Codable {
+    let displayName: String?
+    let description: String?
+    let buckets: [QuotaBucket]?
+}
+
+struct QuotaBucket: Codable {
+    let bucketId: String?
+    let displayName: String?
+    let description: String?
+    let window: String?
+    let remainingFraction: Double?
+    let resetTime: String?
+}
+
+struct EnhancedQuotaGroup {
+    let title: String
+    let fiveHourFraction: Double
+    let fiveHourReset: String?
+    let weeklyFraction: Double?
+    let weeklyReset: String?
+}
+
 // MARK: - Token Usage Data Models & Manager
 
 struct TokenRecord {
@@ -1131,28 +1162,41 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
 class QuotaMenuItemView: NSView {
     private let logoImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let percentageLabel = NSTextField(labelWithString: "")
-    private let progressBar = ProgressBarView()
-    private let resetLabel = NSTextField(labelWithString: "")
     
-    init(title: String, fraction: Double, resetText: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 64))
-        setupViews(title: title, fraction: fraction, resetText: resetText)
+    // Primary / 5h row
+    private let primaryLabel = NSTextField(labelWithString: "")
+    private let primaryPercentLabel = NSTextField(labelWithString: "")
+    private let primaryProgressBar = ProgressBarView()
+    
+    // Weekly row (when dual limit is available)
+    private let weeklyLabel = NSTextField(labelWithString: "")
+    private let weeklyPercentLabel = NSTextField(labelWithString: "")
+    private let weeklyProgressBar = ProgressBarView()
+    
+    // Fallback single-bar reset label
+    private let fallbackResetLabel = NSTextField(labelWithString: "")
+    
+    init(title: String, fraction: Double, resetText: String, weeklyFraction: Double? = nil, weeklyResetText: String? = nil) {
+        let isDual = (weeklyFraction != nil && weeklyResetText != nil)
+        let height: CGFloat = isDual ? 84 : 64
+        super.init(frame: NSRect(x: 0, y: 0, width: 290, height: height))
+        setupViews(title: title, fraction: fraction, resetText: resetText, weeklyFraction: weeklyFraction, weeklyResetText: weeklyResetText)
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    private func setupViews(title: String, fraction: Double, resetText: String) {
-        // Setup logo image view
+    private func setupViews(title: String, fraction: Double, resetText: String, weeklyFraction: Double?, weeklyResetText: String?) {
+        wantsLayer = true
+        
         logoImageView.translatesAutoresizingMaskIntoConstraints = false
         logoImageView.imageScaling = .scaleProportionallyUpOrDown
         
         let imageName: String
         if title.localizedCaseInsensitiveContains("Gemini") {
             imageName = "gemini"
-        } else if title.localizedCaseInsensitiveContains("Claude") {
+        } else if title.localizedCaseInsensitiveContains("Claude") || title.localizedCaseInsensitiveContains("3p") {
             imageName = "claude"
         } else {
             imageName = ""
@@ -1161,97 +1205,161 @@ class QuotaMenuItemView: NSView {
         if !imageName.isEmpty, let image = NSImage(named: imageName) {
             logoImageView.image = image
         } else {
-            logoImageView.image = nil
+            let sym = title.localizedCaseInsensitiveContains("Gemini") ? "sparkles" : "brain.head.profile"
+            logoImageView.image = NSImage(systemSymbolName: sym, accessibilityDescription: title)
+            logoImageView.contentTintColor = title.localizedCaseInsensitiveContains("Gemini") ? .systemBlue : .systemOrange
         }
+        
+        addSubview(logoImageView)
         
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.stringValue = title
         titleLabel.lineBreakMode = .byTruncatingTail
-        
-        percentageLabel.translatesAutoresizingMaskIntoConstraints = false
-        percentageLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
-        percentageLabel.alignment = .right
-        
-        let rawPct = fraction * 100.0
-        let pct: Int
-        if fraction >= 0.9999 {
-            pct = 100
-        } else if fraction < 1.0 && rawPct >= 99.0 {
-            pct = 99
-        } else if fraction > 0.0 && rawPct < 1.0 {
-            pct = 1
-        } else {
-            pct = Int(round(rawPct))
-        }
-        percentageLabel.stringValue = "\(pct)%"
-        
-        let statusColor: NSColor
-        if fraction > 0.50 {
-            statusColor = .systemGreen
-        } else if fraction >= 0.20 {
-            statusColor = .systemOrange
-        } else {
-            statusColor = .systemRed
-        }
-        percentageLabel.textColor = .labelColor
-        
-        progressBar.translatesAutoresizingMaskIntoConstraints = false
-        progressBar.progress = fraction
-        progressBar.color = statusColor
-        
-        resetLabel.translatesAutoresizingMaskIntoConstraints = false
-        resetLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        resetLabel.textColor = .secondaryLabelColor
-        resetLabel.stringValue = resetText
-        resetLabel.lineBreakMode = .byTruncatingTail
-        
-        addSubview(logoImageView)
         addSubview(titleLabel)
-        addSubview(percentageLabel)
-        addSubview(progressBar)
-        addSubview(resetLabel)
         
-        let hasLogo = logoImageView.image != nil
-        let contentLeadingAnchor = hasLogo ? logoImageView.trailingAnchor : leadingAnchor
-        let contentLeadingConstant: CGFloat = hasLogo ? 12 : 16
+        let contentLeading = logoImageView.trailingAnchor
+        let contentLeadingConstant: CGFloat = 12
         
-        var constraints = [
-            // Row 1: Title and Percentage
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            
-            percentageLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            percentageLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            percentageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
-            
-            // Row 2: Progress Bar
-            progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            progressBar.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
-            progressBar.heightAnchor.constraint(equalToConstant: 6),
-            
-            // Row 3: Reset time
-            resetLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            resetLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 4),
-            resetLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
-        ]
+        let isDual = (weeklyFraction != nil && weeklyResetText != nil)
         
-        if hasLogo {
-            constraints.append(contentsOf: [
-                logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+        if isDual, let wFrac = weeklyFraction, let wReset = weeklyResetText {
+            // === DUAL PROGRESS BAR MODE (5h + Weekly) ===
+            
+            // 5h Limit row
+            primaryLabel.translatesAutoresizingMaskIntoConstraints = false
+            primaryLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+            primaryLabel.textColor = .secondaryLabelColor
+            primaryLabel.stringValue = "5h Limit · \(resetText)"
+            addSubview(primaryLabel)
+            
+            primaryPercentLabel.translatesAutoresizingMaskIntoConstraints = false
+            primaryPercentLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+            primaryPercentLabel.alignment = .right
+            primaryPercentLabel.stringValue = "\(formatPct(fraction))%"
+            primaryPercentLabel.textColor = .labelColor
+            addSubview(primaryPercentLabel)
+            
+            primaryProgressBar.translatesAutoresizingMaskIntoConstraints = false
+            primaryProgressBar.progress = fraction
+            primaryProgressBar.color = statusColor(for: fraction)
+            addSubview(primaryProgressBar)
+            
+            // Weekly Limit row
+            weeklyLabel.translatesAutoresizingMaskIntoConstraints = false
+            weeklyLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+            weeklyLabel.textColor = .secondaryLabelColor
+            weeklyLabel.stringValue = "Weekly Limit · \(wReset)"
+            addSubview(weeklyLabel)
+            
+            weeklyPercentLabel.translatesAutoresizingMaskIntoConstraints = false
+            weeklyPercentLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+            weeklyPercentLabel.alignment = .right
+            weeklyPercentLabel.stringValue = "\(formatPct(wFrac))%"
+            weeklyPercentLabel.textColor = .labelColor
+            addSubview(weeklyPercentLabel)
+            
+            weeklyProgressBar.translatesAutoresizingMaskIntoConstraints = false
+            weeklyProgressBar.progress = wFrac
+            weeklyProgressBar.color = statusColor(for: wFrac)
+            addSubview(weeklyProgressBar)
+            
+            NSLayoutConstraint.activate([
+                logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
                 logoImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-                logoImageView.widthAnchor.constraint(equalToConstant: 32),
-                logoImageView.heightAnchor.constraint(equalToConstant: 32)
+                logoImageView.widthAnchor.constraint(equalToConstant: 28),
+                logoImageView.heightAnchor.constraint(equalToConstant: 28),
+                
+                titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+                titleLabel.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                
+                // 5-Hour Label & Percent
+                primaryLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+                primaryLabel.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                
+                primaryPercentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                primaryPercentLabel.centerYAnchor.constraint(equalTo: primaryLabel.centerYAnchor),
+                
+                // 5-Hour Bar
+                primaryProgressBar.topAnchor.constraint(equalTo: primaryLabel.bottomAnchor, constant: 3),
+                primaryProgressBar.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                primaryProgressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                primaryProgressBar.heightAnchor.constraint(equalToConstant: 4),
+                
+                // Weekly Label & Percent
+                weeklyLabel.topAnchor.constraint(equalTo: primaryProgressBar.bottomAnchor, constant: 6),
+                weeklyLabel.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                
+                weeklyPercentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                weeklyPercentLabel.centerYAnchor.constraint(equalTo: weeklyLabel.centerYAnchor),
+                
+                // Weekly Bar
+                weeklyProgressBar.topAnchor.constraint(equalTo: weeklyLabel.bottomAnchor, constant: 3),
+                weeklyProgressBar.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                weeklyProgressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                weeklyProgressBar.heightAnchor.constraint(equalToConstant: 4),
+                weeklyProgressBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+            ])
+        } else {
+            // === SINGLE PROGRESS BAR MODE (Fallback) ===
+            primaryPercentLabel.translatesAutoresizingMaskIntoConstraints = false
+            primaryPercentLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+            primaryPercentLabel.alignment = .right
+            primaryPercentLabel.stringValue = "\(formatPct(fraction))%"
+            primaryPercentLabel.textColor = .labelColor
+            addSubview(primaryPercentLabel)
+            
+            primaryProgressBar.translatesAutoresizingMaskIntoConstraints = false
+            primaryProgressBar.progress = fraction
+            primaryProgressBar.color = statusColor(for: fraction)
+            addSubview(primaryProgressBar)
+            
+            fallbackResetLabel.translatesAutoresizingMaskIntoConstraints = false
+            fallbackResetLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+            fallbackResetLabel.textColor = .secondaryLabelColor
+            fallbackResetLabel.stringValue = resetText
+            fallbackResetLabel.lineBreakMode = .byTruncatingTail
+            addSubview(fallbackResetLabel)
+            
+            NSLayoutConstraint.activate([
+                logoImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                logoImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                logoImageView.widthAnchor.constraint(equalToConstant: 28),
+                logoImageView.heightAnchor.constraint(equalToConstant: 28),
+                
+                titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                titleLabel.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                
+                primaryPercentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                primaryPercentLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                primaryPercentLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
+                
+                primaryProgressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                primaryProgressBar.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+                primaryProgressBar.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                primaryProgressBar.heightAnchor.constraint(equalToConstant: 6),
+                
+                fallbackResetLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                fallbackResetLabel.topAnchor.constraint(equalTo: primaryProgressBar.bottomAnchor, constant: 4),
+                fallbackResetLabel.leadingAnchor.constraint(equalTo: contentLeading, constant: contentLeadingConstant),
+                fallbackResetLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
             ])
         }
-        
-        constraints.append(contentsOf: [
-            titleLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
-            progressBar.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant),
-            resetLabel.leadingAnchor.constraint(equalTo: contentLeadingAnchor, constant: contentLeadingConstant)
-        ])
-        
-        NSLayoutConstraint.activate(constraints)
+    }
+    
+    private func formatPct(_ fraction: Double) -> Int {
+        let rawPct = fraction * 100.0
+        if fraction >= 0.9999 { return 100 }
+        if fraction < 1.0 && rawPct >= 99.0 { return 99 }
+        if fraction > 0.0 && rawPct < 1.0 { return 1 }
+        return Int(round(rawPct))
+    }
+    
+    private func statusColor(for fraction: Double) -> NSColor {
+        if fraction > 0.50 { return .systemGreen }
+        else if fraction >= 0.20 { return .systemOrange }
+        else { return .systemRed }
     }
 }
 
@@ -1278,6 +1386,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isFetching = false
     
     private var lastConfigs: [ClientModelConfig]? = nil
+    private var lastEnhancedGroups: [EnhancedQuotaGroup]? = nil
     private var isOffline = true
     
     private var currentPercentageText: String = "--%"
@@ -1460,6 +1569,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let offlineItem = NSMenuItem(title: "Antigravity is offline (Click to retry)", action: #selector(refreshTriggered(_:)), keyEquivalent: "")
             offlineItem.target = self
             menu.addItem(offlineItem)
+        } else if let enhancedGroups = lastEnhancedGroups, !enhancedGroups.isEmpty {
+            for group in enhancedGroups {
+                let menuItem = NSMenuItem()
+                let customView = QuotaMenuItemView(
+                    title: group.title,
+                    fraction: group.fiveHourFraction,
+                    resetText: formatResetTime(group.fiveHourReset),
+                    weeklyFraction: group.weeklyFraction,
+                    weeklyResetText: formatResetTime(group.weeklyReset)
+                )
+                menuItem.view = customView
+                menu.addItem(menuItem)
+            }
         } else if let configs = lastConfigs {
             let groups = groupConfigs(configs)
             for group in groups {
@@ -1518,6 +1640,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self = self else { return }
             self.isOffline = true
             self.lastConfigs = nil
+            self.lastEnhancedGroups = nil
             self.updateStatusBar(percentageText: "--%", color: nil)
             self.rebuildMenu()
             
@@ -1620,6 +1743,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         
         let target = targets[index]
+        let quotaUrlString = "\(target.scheme)://127.0.0.1:\(target.port)/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+        guard let quotaUrl = URL(string: quotaUrlString) else {
+            tryFetch(targets: targets, index: index + 1, isFallbackScan: isFallbackScan)
+            return
+        }
+        
+        var request = URLRequest(url: quotaUrl)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        if let csrfToken = self.getCsrfToken() {
+            request.setValue(csrfToken, forHTTPHeaderField: "x-codeium-csrf-token")
+        }
+        request.httpBody = "{}".data(using: .utf8)
+        request.timeoutInterval = 3.0
+        
+        let task = self.session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let data = data, error == nil {
+                let decoder = JSONDecoder()
+                
+                // Path 1: RetrieveUserQuotaSummary succeeded with groups
+                if let summaryResp = try? decoder.decode(QuotaSummaryResponse.self, from: data),
+                   let rawGroups = summaryResp.response?.groups, !rawGroups.isEmpty {
+                    let enhancedGroups = self.parseEnhancedQuotaGroups(from: rawGroups)
+                    self.cachedWorkingTarget = target
+                    
+                    DispatchQueue.main.async {
+                        self.retryTimer?.invalidate()
+                        self.retryTimer = nil
+                        self.isFetching = false
+                        self.isOffline = false
+                        self.lastEnhancedGroups = enhancedGroups
+                        self.lastConfigs = nil
+                        
+                        let repGroup = enhancedGroups.first(where: { $0.title.localizedCaseInsensitiveContains("Gemini") }) ?? enhancedGroups[0]
+                        let fraction = repGroup.fiveHourFraction
+                        let pct = self.formatPct(fraction)
+                        let pctText = "\(pct)%"
+                        let color: NSColor = (fraction > 0.50) ? .systemGreen : ((fraction >= 0.20) ? .systemOrange : .systemRed)
+                        self.updateStatusBar(percentageText: pctText, color: color)
+                        self.rebuildMenu()
+                        NSLog("AgyUsage: successfully fetched quota summary %@", pctText)
+                    }
+                    return
+                }
+                
+                // Path 2: Payload is directly GetUserStatus (e.g. test mock server)
+                if let statusResp = try? decoder.decode(GetUserStatusResponse.self, from: data),
+                   let configs = statusResp.userStatus?.cascadeModelConfigData?.clientModelConfigs, !configs.isEmpty {
+                    self.cachedWorkingTarget = target
+                    self.applyLegacyConfigs(configs)
+                    return
+                }
+            }
+            
+            // Path 3: Fall back to GetUserStatus on this target
+            self.fetchFallbackGetUserStatus(targets: targets, index: index, target: target, isFallbackScan: isFallbackScan)
+        }
+        task.resume()
+    }
+    
+    private func fetchFallbackGetUserStatus(targets: [EndpointTarget], index: Int, target: EndpointTarget, isFallbackScan: Bool) {
         let urlString = "\(target.scheme)://127.0.0.1:\(target.port)/exa.language_server_pb.LanguageServerService/GetUserStatus"
         guard let url = URL(string: urlString) else {
             tryFetch(targets: targets, index: index + 1, isFallbackScan: isFallbackScan)
@@ -1654,50 +1843,88 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 
-                // Cache the verified working endpoint
                 self.cachedWorkingTarget = target
-                
-                DispatchQueue.main.async {
-                    self.retryTimer?.invalidate()
-                    self.retryTimer = nil
-                    self.isFetching = false
-                    self.isOffline = false
-                    self.lastConfigs = configs
-                    
-                    if let repConfig = self.findStatusBarConfig(from: configs),
-                       let fraction = repConfig.quotaInfo?.remainingFraction {
-                        let rawPct = fraction * 100.0
-                        let pct: Int
-                        if fraction >= 0.9999 {
-                            pct = 100
-                        } else if fraction < 1.0 && rawPct >= 99.0 {
-                            pct = 99
-                        } else if fraction > 0.0 && rawPct < 1.0 {
-                            pct = 1
-                        } else {
-                            pct = Int(round(rawPct))
-                        }
-                        let pctText = "\(pct)%"
-                        let color: NSColor
-                        if fraction > 0.50 {
-                            color = .systemGreen
-                        } else if fraction >= 0.20 {
-                            color = .systemOrange
-                        } else {
-                            color = .systemRed
-                        }
-                        self.updateStatusBar(percentageText: pctText, color: color)
-                        NSLog("AgyUsage: successfully fetched quota %@", pctText)
-                    } else {
-                        self.updateStatusBar(percentageText: "--%", color: nil)
-                    }
-                    self.rebuildMenu()
-                }
+                self.applyLegacyConfigs(configs)
             } catch {
                 self.tryFetch(targets: targets, index: index + 1, isFallbackScan: isFallbackScan)
             }
         }
         task.resume()
+    }
+    
+    private func applyLegacyConfigs(_ configs: [ClientModelConfig]) {
+        DispatchQueue.main.async {
+            self.retryTimer?.invalidate()
+            self.retryTimer = nil
+            self.isFetching = false
+            self.isOffline = false
+            self.lastEnhancedGroups = nil
+            self.lastConfigs = configs
+            
+            if let repConfig = self.findStatusBarConfig(from: configs),
+               let fraction = repConfig.quotaInfo?.remainingFraction {
+                let pct = self.formatPct(fraction)
+                let pctText = "\(pct)%"
+                let color: NSColor = (fraction > 0.50) ? .systemGreen : ((fraction >= 0.20) ? .systemOrange : .systemRed)
+                self.updateStatusBar(percentageText: pctText, color: color)
+                NSLog("AgyUsage: successfully fetched legacy quota %@", pctText)
+            } else {
+                self.updateStatusBar(percentageText: "--%", color: nil)
+            }
+            self.rebuildMenu()
+        }
+    }
+    
+    private func parseEnhancedQuotaGroups(from quotaGroups: [QuotaGroup]) -> [EnhancedQuotaGroup] {
+        var result: [EnhancedQuotaGroup] = []
+        for g in quotaGroups {
+            let rawTitle = g.displayName ?? "Models"
+            let title: String
+            if rawTitle.localizedCaseInsensitiveContains("Gemini") {
+                title = "Gemini"
+            } else if rawTitle.localizedCaseInsensitiveContains("Claude") || rawTitle.localizedCaseInsensitiveContains("GPT") {
+                title = "Claude & GPT"
+            } else {
+                title = rawTitle
+            }
+            
+            var fiveHourBucket: QuotaBucket? = nil
+            var weeklyBucket: QuotaBucket? = nil
+            
+            if let buckets = g.buckets {
+                for b in buckets {
+                    let win = b.window?.lowercased() ?? ""
+                    let bid = b.bucketId?.lowercased() ?? ""
+                    if win == "5h" || bid.contains("5h") {
+                        fiveHourBucket = b
+                    } else if win == "weekly" || bid.contains("weekly") {
+                        weeklyBucket = b
+                    }
+                }
+            }
+            
+            let fiveHourFrac = fiveHourBucket?.remainingFraction ?? 1.0
+            let fiveHourReset = fiveHourBucket?.resetTime
+            let weeklyFrac = weeklyBucket?.remainingFraction
+            let weeklyReset = weeklyBucket?.resetTime
+            
+            result.append(EnhancedQuotaGroup(
+                title: title,
+                fiveHourFraction: fiveHourFrac,
+                fiveHourReset: fiveHourReset,
+                weeklyFraction: weeklyFrac,
+                weeklyReset: weeklyReset
+            ))
+        }
+        return result
+    }
+    
+    private func formatPct(_ fraction: Double) -> Int {
+        let rawPct = fraction * 100.0
+        if fraction >= 0.9999 { return 100 }
+        if fraction < 1.0 && rawPct >= 99.0 { return 99 }
+        if fraction > 0.0 && rawPct < 1.0 { return 1 }
+        return Int(round(rawPct))
     }
     
     // MARK: - Helpers
@@ -1856,10 +2083,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return "Quota reset"
         }
         
-        let hours = Int(timeInterval) / 3600
-        let minutes = (Int(timeInterval) % 3600) / 60
+        let totalMinutes = Int(timeInterval) / 60
+        let totalHours = totalMinutes / 60
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        let minutes = totalMinutes % 60
         
-        if hours > 0 {
+        if days > 0 {
+            return "Resets in \(days)d \(hours)h"
+        } else if hours > 0 {
             return "Resets in \(hours)h \(minutes)m"
         } else {
             return "Resets in \(minutes)m"
