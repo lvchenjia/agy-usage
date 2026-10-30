@@ -111,10 +111,10 @@ enum TimeWindow: Int, CaseIterable {
     
     var title: String {
         switch self {
-        case .fiveHours: return "5 Hours"
-        case .today: return "Today"
-        case .sevenDays: return "7 Days"
-        case .thirtyDays: return "30 Days"
+        case .fiveHours: return "5h"
+        case .today: return "24h"
+        case .sevenDays: return "7d"
+        case .thirtyDays: return "30d"
         case .allTime: return "All"
         }
     }
@@ -405,7 +405,6 @@ class ProgressBarView: NSView {
 class NativeMetricCard: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "--")
-    private let subLabel = NSTextField(labelWithString: "--")
     private let dotView = NSBox()
     
     init(title: String, tint: NSColor) {
@@ -434,19 +433,14 @@ class NativeMetricCard: NSView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
         
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 21, weight: .bold)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 22, weight: .bold)
         valueLabel.textColor = .labelColor
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(valueLabel)
         
-        subLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        subLabel.textColor = .tertiaryLabelColor
-        subLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(subLabel)
-        
         NSLayoutConstraint.activate([
             dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            dotView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            dotView.topAnchor.constraint(equalTo: topAnchor, constant: 13),
             dotView.widthAnchor.constraint(equalToConstant: 8),
             dotView.heightAnchor.constraint(equalToConstant: 8),
             
@@ -454,13 +448,10 @@ class NativeMetricCard: NSView {
             titleLabel.centerYAnchor.constraint(equalTo: dotView.centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             
-            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 5),
+            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
             valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-            
-            subLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
-            subLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            subLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10)
+            valueLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
         ])
     }
     
@@ -476,10 +467,9 @@ class NativeMetricCard: NSView {
             : NSColor(white: 0.98, alpha: 0.95).cgColor
     }
     
-    func update(value: String, sub: String, valueColor: NSColor = .labelColor) {
+    func update(value: String, valueColor: NSColor = .labelColor) {
         valueLabel.stringValue = value
         valueLabel.textColor = valueColor
-        subLabel.stringValue = sub
     }
 }
 
@@ -554,6 +544,33 @@ class ModelCellView: NSTableCellView {
     }
 }
 
+func formatKMB(_ n: Int64) -> String {
+    let absN = abs(n)
+    let sign = n < 0 ? "-" : ""
+    if absN >= 1_000_000_000 {
+        let val = Double(absN) / 1_000_000_000.0
+        return String(format: "%@%.2fB", sign, val)
+    } else if absN >= 1_000_000 {
+        let val = Double(absN) / 1_000_000.0
+        if val >= 100 {
+            return String(format: "%@%.0fM", sign, val)
+        } else if val >= 10 {
+            return String(format: "%@%.1fM", sign, val)
+        } else {
+            return String(format: "%@%.2fM", sign, val)
+        }
+    } else if absN >= 1_000 {
+        let val = Double(absN) / 1_000.0
+        if val >= 100 {
+            return String(format: "%@%.0fK", sign, val)
+        } else {
+            return String(format: "%@%.1fK", sign, val)
+        }
+    } else {
+        return "\(n)"
+    }
+}
+
 class CacheCellView: NSTableCellView {
     let valueLabel = NSTextField(labelWithString: "")
     let pillBadge = NSBox()
@@ -604,8 +621,8 @@ class CacheCellView: NSTableCellView {
         ])
     }
     
-    func configure(tokens: Int64, ratio: Double, formatter: NumberFormatter) {
-        valueLabel.stringValue = formatter.string(from: NSNumber(value: tokens)) ?? "0"
+    func configure(tokens: Int64, ratio: Double) {
+        valueLabel.stringValue = formatKMB(tokens)
         pillLabel.stringValue = String(format: "%.1f%%", ratio)
         pillBadge.isHidden = (tokens == 0)
     }
@@ -722,7 +739,6 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
     
     private var totalTokensCard: NativeMetricCard!
     private var cacheRatioCard: NativeMetricCard!
-    private var outputCard: NativeMetricCard!
     private var totalCallsCard: NativeMetricCard!
     
     private var tableContainer: RoundedCardContainer!
@@ -732,15 +748,14 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
     
     convenience init() {
         let window = AnalyticsWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Token Analytics"
-        window.subtitle = "Antigravity Assistant"
         window.toolbarStyle = .unified
-        window.minSize = NSSize(width: 860, height: 500)
+        window.minSize = NSSize(width: 800, height: 460)
         window.center()
         self.init(window: window)
         setupToolbar()
@@ -797,22 +812,20 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
     private func setupUI() {
         guard let window = self.window, let contentView = window.contentView else { return }
         
-        // 1. Top Metrics Cards Row
+        // 1. Top Metrics Cards Row (3 Cards: Tokens, Cache Hit Rate, Requests)
         let cardStack = NSStackView()
         cardStack.orientation = .horizontal
         cardStack.distribution = .fillEqually
-        cardStack.spacing = 12
+        cardStack.spacing = 14
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(cardStack)
         
         totalTokensCard = NativeMetricCard(title: "Total Tokens", tint: .systemBlue)
         cacheRatioCard = NativeMetricCard(title: "Cache Hit Rate", tint: .systemGreen)
-        outputCard = NativeMetricCard(title: "Output Tokens", tint: .systemPurple)
         totalCallsCard = NativeMetricCard(title: "Total Requests", tint: .systemOrange)
         
         cardStack.addArrangedSubview(totalTokensCard)
         cardStack.addArrangedSubview(cacheRatioCard)
-        cardStack.addArrangedSubview(outputCard)
         cardStack.addArrangedSubview(totalCallsCard)
         
         // 2. Rounded Table Container Card
@@ -844,13 +857,11 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         tableView.delegate = self
         
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "MODEL", 220, 180, .left),
-            ("calls", "REQUESTS", 75, 55, .right),
-            ("input", "INPUT", 80, 60, .right),
-            ("cache", "PROMPT CACHE", 140, 110, .right),
-            ("output", "OUTPUT", 80, 60, .right),
-            ("total", "TOTAL TOKENS", 105, 80, .right),
-            ("share", "SHARE", 95, 75, .right)
+            ("model", "MODEL", 260, 180, .left),
+            ("calls", "REQUESTS", 100, 70, .right),
+            ("total", "TOKENS", 120, 90, .right),
+            ("cache", "PROMPT CACHE", 160, 120, .right),
+            ("share", "USAGE SHARE", 140, 100, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -894,7 +905,7 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             cardStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
             cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
             cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
-            cardStack.heightAnchor.constraint(equalToConstant: 78),
+            cardStack.heightAnchor.constraint(equalToConstant: 68),
             
             // Rounded Table Container
             tableContainer.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),
@@ -1046,12 +1057,8 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         self.tableView.isHidden = isEmpty
         self.tableView.reloadData()
         
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        
         // 1. Total Tokens
-        let totStr = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
-        totalTokensCard.update(value: totStr, sub: formatCompactNumber(totalAll) + " tokens processed")
+        totalTokensCard.update(value: formatKMB(totalAll))
         
         // 2. Cache Hit Rate
         let promptTokens = totalIn + totalCache
@@ -1059,40 +1066,20 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             let ratio = Double(totalCache) / Double(promptTokens) * 100.0
             cacheRatioCard.update(
                 value: String(format: "%.1f%%", ratio),
-                sub: "Saved " + formatCompactNumber(totalCache) + " cached tokens",
                 valueColor: .systemGreen
             )
         } else {
-            cacheRatioCard.update(value: "0.0%", sub: "No prompt cache", valueColor: .labelColor)
+            cacheRatioCard.update(value: "0.0%", valueColor: .labelColor)
         }
         
-        // 3. Output Tokens
-        let outStr = formatter.string(from: NSNumber(value: totalOut)) ?? "\(totalOut)"
-        let outShare = totalAll > 0 ? (Double(totalOut) / Double(totalAll) * 100.0) : 0.0
-        outputCard.update(value: outStr, sub: String(format: "%.1f%% of total volume", outShare))
-        
-        // 4. Total Requests
-        if totalCalls > 0 {
-            let avgPerCall = totalAll / Int64(totalCalls)
-            totalCallsCard.update(value: "\(totalCalls)", sub: "Avg " + formatCompactNumber(avgPerCall) + " / request")
-        } else {
-            totalCallsCard.update(value: "0", sub: "No calls in this window")
-        }
+        // 3. Total Requests
+        let callText = totalCalls >= 1000 ? formatKMB(Int64(totalCalls)) : "\(totalCalls)"
+        totalCallsCard.update(value: callText)
         
         // Status Bar
         let df = DateFormatter()
         df.timeStyle = .medium
         statusLabel.stringValue = "● Scanned \(allRecords.count) sessions (\(filtered.count) in window) · Updated \(df.string(from: Date()))"
-    }
-    
-    private func formatCompactNumber(_ n: Int64) -> String {
-        if n >= 1_000_000 {
-            return String(format: "%.2fM", Double(n) / 1_000_000.0)
-        } else if n >= 1_000 {
-            return String(format: "%.1fK", Double(n) / 1_000.0)
-        } else {
-            return "\(n)"
-        }
     }
     
     // MARK: - NSTableViewDataSource & Delegate
@@ -1104,9 +1091,6 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         guard row < displayedStats.count, let column = tableColumn else { return nil }
         let item = displayedStats[row]
         let colId = column.identifier.rawValue
-        
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
         let totalAcrossAll = displayedStats.reduce(0) { $0 + $1.totalTokens }
         
         switch colId {
@@ -1119,31 +1103,20 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         case "calls":
             let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("CallsCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
             cell.identifier = NSUserInterfaceItemIdentifier("CallsCell")
-            cell.configure(text: "\(item.callCount)")
-            return cell
-            
-        case "input":
-            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("InputCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
-            cell.identifier = NSUserInterfaceItemIdentifier("InputCell")
-            cell.configure(text: formatter.string(from: NSNumber(value: item.inputTokens)) ?? "0")
-            return cell
-            
-        case "cache":
-            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("CacheCell"), owner: self) as? CacheCellView) ?? CacheCellView()
-            cell.identifier = NSUserInterfaceItemIdentifier("CacheCell")
-            cell.configure(tokens: item.cacheReadTokens, ratio: item.cacheRatio, formatter: formatter)
-            return cell
-            
-        case "output":
-            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("OutputCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
-            cell.identifier = NSUserInterfaceItemIdentifier("OutputCell")
-            cell.configure(text: formatter.string(from: NSNumber(value: item.outputTokens)) ?? "0")
+            let callText = item.callCount >= 1000 ? formatKMB(Int64(item.callCount)) : "\(item.callCount)"
+            cell.configure(text: callText)
             return cell
             
         case "total":
             let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("TotalCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
             cell.identifier = NSUserInterfaceItemIdentifier("TotalCell")
-            cell.configure(text: formatter.string(from: NSNumber(value: item.totalTokens)) ?? "0", isBold: true)
+            cell.configure(text: formatKMB(item.totalTokens), isBold: true)
+            return cell
+            
+        case "cache":
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("CacheCell"), owner: self) as? CacheCellView) ?? CacheCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("CacheCell")
+            cell.configure(tokens: item.cacheReadTokens, ratio: item.cacheRatio)
             return cell
             
         case "share":
