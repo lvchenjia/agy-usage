@@ -248,251 +248,38 @@ class TokenStatsManager {
 
 // MARK: - Modern UI Components
 
-class CapsulePillBar: NSView {
-    var onSelectionChanged: ((Int) -> Void)?
-    private var buttons: [NSButton] = []
-    private let indicatorView = NSBox()
-    private let stack = NSStackView()
-    private(set) var selectedIndex: Int = 0
-    
-    init(items: [String]) {
-        super.init(frame: .zero)
-        setup(items: items)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    
-    private func setup(items: [String]) {
-        wantsLayer = true
-        layer?.cornerRadius = 10
-        layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
-        
-        // Single sliding elevated card indicator
-        indicatorView.boxType = .custom
-        indicatorView.cornerRadius = 7
-        indicatorView.borderWidth = 0
-        indicatorView.translatesAutoresizingMaskIntoConstraints = true
-        addSubview(indicatorView)
-        
-        stack.orientation = .horizontal
-        stack.distribution = .fillEqually
-        stack.spacing = 2
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
-            heightAnchor.constraint(equalToConstant: 34)
-        ])
-        
-        for (i, item) in items.enumerated() {
-            let btn = NSButton(title: item, target: self, action: #selector(btnClicked(_:)))
-            btn.tag = i
-            btn.isBordered = false
-            btn.alignment = .center
-            btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            buttons.append(btn)
-            stack.addArrangedSubview(btn)
-            btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
-        }
-        updateIndicator()
+class ProgressBarView: NSView {
+    var progress: Double = 0.0 {
+        didSet { needsDisplay = true }
     }
     
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateIndicator()
+    var color: NSColor = .systemBlue {
+        didSet { needsDisplay = true }
     }
     
-    @objc private func btnClicked(_ sender: NSButton) {
-        setSelectedIndex(sender.tag)
-        onSelectionChanged?(sender.tag)
-    }
-    
-    func setSelectedIndex(_ index: Int) {
-        guard index >= 0 && index < buttons.count else { return }
-        selectedIndex = index
-        updateIndicator()
-    }
-    
-    override func layout() {
-        super.layout()
-        updateIndicatorFrame()
-    }
-    
-    private func updateIndicatorFrame() {
-        guard selectedIndex >= 0 && selectedIndex < buttons.count else { return }
-        let targetBtn = buttons[selectedIndex]
-        indicatorView.frame = targetBtn.frame.offsetBy(dx: 3, dy: 3)
-    }
-    
-    private func updateIndicator() {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        indicatorView.fillColor = isDark ? NSColor(white: 0.28, alpha: 1.0) : NSColor.white
-        indicatorView.shadow = {
-            let s = NSShadow()
-            s.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.35 : 0.08)
-            s.shadowOffset = NSSize(width: 0, height: -1)
-            s.shadowBlurRadius = 2.0
-            return s
-        }()
-        
-        for (i, btn) in buttons.enumerated() {
-            let isSel = (i == selectedIndex)
-            btn.contentTintColor = isSel ? .labelColor : .secondaryLabelColor
-            btn.font = NSFont.systemFont(ofSize: 13, weight: isSel ? .semibold : .medium)
-        }
-        updateIndicatorFrame()
-    }
-}
-
-class FlatActionPillButton: NSControl {
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let iconView = NSImageView()
-    private let contentStack = NSStackView()
-    private var isHovered = false
-    private var isPressed = false
-    
-    var title: String = "" {
-        didSet { titleLabel.stringValue = title }
-    }
-    
-    override var isEnabled: Bool {
-        didSet {
-            alphaValue = isEnabled ? 1.0 : 0.5
-            updateAppearance()
-        }
-    }
-    
-    init(title: String, symbol: String? = nil, target: AnyObject?, action: Selector?) {
-        super.init(frame: .zero)
-        self.target = target
-        self.action = action
-        self.title = title
-        setup(title: title, symbol: symbol)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    
-    private func setup(title: String, symbol: String?) {
-        wantsLayer = true
-        layer?.cornerRadius = 8
-        
-        contentStack.orientation = .horizontal
-        contentStack.alignment = .centerY
-        contentStack.spacing = 6
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(contentStack)
-        
-        if let sym = symbol {
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-            iconView.image = NSImage(systemSymbolName: sym, accessibilityDescription: title)?.withSymbolConfiguration(config)
-            iconView.contentTintColor = .secondaryLabelColor
-            contentStack.addArrangedSubview(iconView)
-        }
-        
-        titleLabel.stringValue = title
-        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        titleLabel.textColor = .labelColor
-        contentStack.addArrangedSubview(titleLabel)
-        
-        NSLayoutConstraint.activate([
-            contentStack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(equalToConstant: 30)
-        ])
-        
-        updateAppearance()
-    }
-    
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateAppearance()
-    }
-    
-    private func updateAppearance() {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        if isPressed {
-            layer?.backgroundColor = isDark ? NSColor(white: 0.32, alpha: 1.0).cgColor : NSColor(white: 0.82, alpha: 1.0).cgColor
-        } else if isHovered {
-            layer?.backgroundColor = isDark ? NSColor(white: 0.26, alpha: 1.0).cgColor : NSColor(white: 0.88, alpha: 1.0).cgColor
-        } else {
-            layer?.backgroundColor = isDark ? NSColor(white: 0.22, alpha: 1.0).cgColor : NSColor(white: 0.92, alpha: 1.0).cgColor
-        }
-    }
-    
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-        isPressed = true
-        updateAppearance()
-    }
-    
-    override func mouseUp(with event: NSEvent) {
-        guard isEnabled else { return }
-        isPressed = false
-        updateAppearance()
-        let pt = convert(event.locationInWindow, from: nil)
-        if bounds.contains(pt) {
-            sendAction(action, to: target)
-        }
-    }
-}
-
-class FlatTableHeaderView: NSTableHeaderView {
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.clear.set()
-        bounds.fill()
-        
         super.draw(dirtyRect)
         
-        let hairline = NSRect(x: 0, y: bounds.height - 0.5, width: bounds.width, height: 0.5)
-        NSColor.separatorColor.withAlphaComponent(0.18).set()
-        hairline.fill()
-    }
-}
-
-class FlatTableHeaderCell: NSTableHeaderCell {
-    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
-        drawInterior(withFrame: cellFrame, in: controlView)
-    }
-    
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        let text = stringValue
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.alignment = self.alignment
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .paragraphStyle: pStyle
-        ]
-        let inset = NSRect(x: cellFrame.origin.x, y: cellFrame.origin.y + 6, width: cellFrame.width - 4, height: cellFrame.height - 6)
-        text.draw(in: inset, withAttributes: attrs)
-    }
-}
-
-class ModernTableRowView: NSTableRowView {
-    override func drawSelection(in dirtyRect: NSRect) {
-        if isSelected {
-            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 8, yRadius: 8)
-            NSColor.quaternaryLabelColor.withAlphaComponent(0.12).set()
-            path.fill()
+        let trackPath = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        let trackColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.2)
+        trackColor.set()
+        trackPath.fill()
+        
+        let fillWidth = bounds.width * CGFloat(max(0, min(1, progress)))
+        if fillWidth > 0 {
+            let fillRect = NSRect(x: 0, y: 0, width: fillWidth, height: bounds.height)
+            let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+            color.set()
+            fillPath.fill()
         }
     }
-    
-    override func drawSeparator(in dirtyRect: NSRect) {
-        let sepColor = NSColor.separatorColor.withAlphaComponent(0.10)
-        sepColor.set()
-        let sepRect = NSRect(x: 14, y: 0, width: bounds.width - 28, height: 0.5)
-        sepRect.fill()
-    }
 }
 
-class MetricCardView: NSView {
-    private let dotView = NSBox()
+class NativeMetricCard: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "--")
     private let subLabel = NSTextField(labelWithString: "--")
-    private let container = NSBox()
+    private let dotView = NSBox()
     
     init(title: String, tint: NSColor) {
         super.init(frame: .zero)
@@ -501,59 +288,65 @@ class MetricCardView: NSView {
     required init?(coder: NSCoder) { fatalError() }
     
     private func setup(title: String, tint: NSColor) {
-        container.boxType = .custom
-        container.cornerRadius = 10
-        container.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65)
-        container.borderColor = NSColor.separatorColor.withAlphaComponent(0.14)
-        container.borderWidth = 0.5
-        container.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(container)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
+        layer?.borderWidth = 0.5
+        updateBackground()
         
         dotView.boxType = .custom
-        dotView.cornerRadius = 4.0
+        dotView.cornerRadius = 4
         dotView.fillColor = tint
         dotView.borderWidth = 0
         dotView.translatesAutoresizingMaskIntoConstraints = false
-        container.contentView?.addSubview(dotView)
+        addSubview(dotView)
         
         titleLabel.stringValue = title
         titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = .secondaryLabelColor
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.contentView?.addSubview(titleLabel)
+        addSubview(titleLabel)
         
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 22, weight: .bold)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 21, weight: .bold)
         valueLabel.textColor = .labelColor
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.contentView?.addSubview(valueLabel)
+        addSubview(valueLabel)
         
         subLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         subLabel.textColor = .tertiaryLabelColor
         subLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.contentView?.addSubview(subLabel)
+        addSubview(subLabel)
         
         NSLayoutConstraint.activate([
-            container.topAnchor.constraint(equalTo: topAnchor),
-            container.leadingAnchor.constraint(equalTo: leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor),
-            container.bottomAnchor.constraint(equalTo: bottomAnchor),
-            
-            dotView.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
-            dotView.topAnchor.constraint(equalTo: container.contentView!.topAnchor, constant: 12),
+            dotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            dotView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             dotView.widthAnchor.constraint(equalToConstant: 8),
             dotView.heightAnchor.constraint(equalToConstant: 8),
             
             titleLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 7),
             titleLabel.centerYAnchor.constraint(equalTo: dotView.centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             
-            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
-            valueLabel.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
-            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.contentView!.trailingAnchor, constant: -8),
+            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 5),
+            valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             
             subLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
-            subLabel.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
-            subLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.contentView!.trailingAnchor, constant: -8)
+            subLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            subLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10)
         ])
+    }
+    
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+    
+    private func updateBackground() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = isDark
+            ? NSColor(white: 0.20, alpha: 0.7).cgColor
+            : NSColor(white: 0.98, alpha: 0.95).cgColor
     }
     
     func update(value: String, sub: String, valueColor: NSColor = .labelColor) {
@@ -788,139 +581,136 @@ class AnalyticsWindow: NSWindow {
     }
 }
 
-class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private static let toolbarIdentifier = NSToolbar.Identifier("TokenStatsToolbar")
+    private static let segmentItemId = NSToolbarItem.Identifier("TokenStatsTimeWindowSegment")
+    private static let refreshItemId = NSToolbarItem.Identifier("TokenStatsRefresh")
+    
     private var allRecords: [TokenRecord] = []
     private var currentWindow: TimeWindow = .fiveHours
     private var displayedStats: [ModelAggregatedStats] = []
     
-    private var pillBar: CapsulePillBar!
+    private var timeSegmentControl: NSSegmentedControl?
+    private var refreshButton: NSButton?
+    
+    private var totalTokensCard: NativeMetricCard!
+    private var cacheRatioCard: NativeMetricCard!
+    private var outputCard: NativeMetricCard!
+    private var totalCallsCard: NativeMetricCard!
+    
     private var tableView: NSTableView!
     private var emptyStateView: NSView!
-    
-    // Metric Cards
-    private var totalTokensCard: MetricCardView!
-    private var cacheRatioCard: MetricCardView!
-    private var outputCard: MetricCardView!
-    private var totalCallsCard: MetricCardView!
-    
     private var statusLabel: NSTextField!
-    private var refreshButton: FlatActionPillButton!
-    private var closeButton: FlatActionPillButton!
     
     convenience init() {
         let window = AnalyticsWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 880, height: 580),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = ""
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        window.title = "Token Analytics"
+        window.subtitle = "Antigravity Assistant"
+        window.toolbarStyle = .unified
+        window.minSize = NSSize(width: 860, height: 500)
         window.center()
-        window.minSize = NSSize(width: 800, height: 500)
         self.init(window: window)
+        setupToolbar()
         setupUI()
     }
     
-    private func setupUI() {
+    private func setupToolbar() {
         guard let window = self.window else { return }
-        
-        let visualEffect = NSVisualEffectView(frame: window.contentView!.bounds)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.material = .underWindowBackground
-        visualEffect.state = .active
-        window.contentView = visualEffect
-        let contentView = visualEffect
-        
-        // 1. Top Header Area (Integrated Toolbar Title & Elevated Capsule Pill Selector)
-        let headerView = NSView()
-        headerView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(headerView)
-        
-        let headerTitle = NSTextField(labelWithString: "Token Analytics")
-        headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = NSFont.systemFont(ofSize: 18, weight: .bold)
-        headerTitle.textColor = .labelColor
-        headerView.addSubview(headerTitle)
-        
-        let headerSubtitle = NSTextField(labelWithString: "Antigravity Assistant Token Usage & Prompt Cache Analytics")
-        headerSubtitle.translatesAutoresizingMaskIntoConstraints = false
-        headerSubtitle.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        headerSubtitle.textColor = .secondaryLabelColor
-        headerView.addSubview(headerSubtitle)
-        
-        let labels = TimeWindow.allCases.map { $0.title }
-        pillBar = CapsulePillBar(items: labels)
-        pillBar.translatesAutoresizingMaskIntoConstraints = false
-        pillBar.onSelectionChanged = { [weak self] index in
-            if let window = TimeWindow(rawValue: index) {
-                self?.currentWindow = window
-                self?.filterAndDisplay()
-            }
+        let toolbar = NSToolbar(identifier: Self.toolbarIdentifier)
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+    }
+    
+    // MARK: - NSToolbarDelegate
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return [.flexibleSpace, Self.segmentItemId, .flexibleSpace, Self.refreshItemId]
+    }
+    
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return [.flexibleSpace, Self.segmentItemId, .flexibleSpace, Self.refreshItemId]
+    }
+    
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == Self.segmentItemId {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let titles = TimeWindow.allCases.map { $0.title }
+            let seg = NSSegmentedControl(labels: titles, trackingMode: .selectOne, target: self, action: #selector(segmentChanged(_:)))
+            seg.selectedSegment = currentWindow.rawValue
+            seg.segmentStyle = .texturedRounded
+            seg.controlSize = .regular
+            self.timeSegmentControl = seg
+            item.view = seg
+            item.label = "Time Window"
+            item.paletteLabel = "Time Window"
+            return item
+        } else if itemIdentifier == Self.refreshItemId {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let img = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+            let btn = NSButton(image: img!, target: self, action: #selector(refreshClicked(_:)))
+            btn.bezelStyle = .texturedRounded
+            btn.toolTip = "Refresh local session data (⌘R)"
+            btn.controlSize = .regular
+            self.refreshButton = btn
+            item.view = btn
+            item.label = "Refresh"
+            item.paletteLabel = "Refresh"
+            return item
         }
-        headerView.addSubview(pillBar)
+        return nil
+    }
+    
+    private func setupUI() {
+        guard let window = self.window, let contentView = window.contentView else { return }
         
-        // 2. Metrics Cards Row
+        // 1. Top Metrics Cards Row
         let cardStack = NSStackView()
         cardStack.orientation = .horizontal
         cardStack.distribution = .fillEqually
-        cardStack.spacing = 10
+        cardStack.spacing = 12
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(cardStack)
         
-        totalTokensCard = MetricCardView(title: "Total Tokens", tint: .systemBlue)
-        cacheRatioCard = MetricCardView(title: "Cache Hit Rate", tint: .systemGreen)
-        outputCard = MetricCardView(title: "Output Tokens", tint: .systemPurple)
-        totalCallsCard = MetricCardView(title: "Total Requests", tint: .systemOrange)
+        totalTokensCard = NativeMetricCard(title: "Total Tokens", tint: .systemBlue)
+        cacheRatioCard = NativeMetricCard(title: "Cache Hit Rate", tint: .systemGreen)
+        outputCard = NativeMetricCard(title: "Output Tokens", tint: .systemPurple)
+        totalCallsCard = NativeMetricCard(title: "Total Requests", tint: .systemOrange)
         
         cardStack.addArrangedSubview(totalTokensCard)
         cardStack.addArrangedSubview(cacheRatioCard)
         cardStack.addArrangedSubview(outputCard)
         cardStack.addArrangedSubview(totalCallsCard)
         
-        // 3. Table Container Card
-        let tableContainer = NSBox()
-        tableContainer.boxType = .custom
-        tableContainer.cornerRadius = 10
-        tableContainer.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65)
-        tableContainer.borderColor = NSColor.separatorColor.withAlphaComponent(0.14)
-        tableContainer.borderWidth = 0.5
-        tableContainer.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(tableContainer)
-        
+        // 2. Table Inset Container ScrollView
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.scrollerStyle = .overlay
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
-        tableContainer.contentView?.addSubview(scrollView)
+        contentView.addSubview(scrollView)
         
         tableView = NSTableView()
-        tableView.usesAlternatingRowBackgroundColors = false
-        tableView.backgroundColor = .clear
-        tableView.gridStyleMask = [] // Clean modern minimalist list style
-        tableView.rowHeight = 44
-        tableView.intercellSpacing = NSSize(width: 8, height: 4)
-        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        tableView.style = .inset
+        tableView.rowHeight = 36
+        tableView.intercellSpacing = NSSize(width: 8, height: 2)
         tableView.dataSource = self
         tableView.delegate = self
         
-        let modernHeader = FlatTableHeaderView()
-        tableView.headerView = modernHeader
-        
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "Model", 215, 160, .left),
-            ("calls", "Requests", 60, 45, .right),
-            ("input", "Input", 65, 50, .right),
-            ("cache", "Prompt Cache", 125, 95, .right),
-            ("output", "Output", 65, 50, .right),
-            ("total", "Total Tokens", 85, 65, .right),
-            ("share", "Share", 80, 60, .right)
+            ("model", "Model", 230, 180, .left),
+            ("calls", "Requests", 70, 50, .right),
+            ("input", "Input", 75, 55, .right),
+            ("cache", "Prompt Cache", 140, 110, .right),
+            ("output", "Output", 75, 55, .right),
+            ("total", "Total Tokens", 100, 80, .right),
+            ("share", "Share", 95, 75, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -929,108 +719,65 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             col.width = width
             col.minWidth = minW
             col.resizingMask = [.userResizingMask, .autoresizingMask]
-            let cell = FlatTableHeaderCell(textCell: title)
-            cell.alignment = align
-            col.headerCell = cell
+            col.headerCell.alignment = align
             tableView.addTableColumn(col)
         }
         
         scrollView.documentView = tableView
         
-        // Empty State View
+        // 3. Empty State View
         emptyStateView = makeEmptyStateView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
         emptyStateView.isHidden = true
-        tableContainer.contentView?.addSubview(emptyStateView)
+        contentView.addSubview(emptyStateView)
         
-        // 4. Bottom Controls Bar
+        // 4. Bottom Native Status Bar
         let bottomView = NSView()
         bottomView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(bottomView)
         
-        let bottomSeparator = NSBox()
-        bottomSeparator.boxType = .separator
-        bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
-        bottomView.addSubview(bottomSeparator)
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        bottomView.addSubview(separator)
         
         statusLabel = NSTextField(labelWithString: "Ready")
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.font = NSFont.systemFont(ofSize: 12)
+        statusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
         bottomView.addSubview(statusLabel)
         
-        refreshButton = FlatActionPillButton(title: "Refresh", symbol: "arrow.clockwise", target: self, action: #selector(refreshClicked(_:)))
-        refreshButton.translatesAutoresizingMaskIntoConstraints = false
-        bottomView.addSubview(refreshButton)
-        
-        closeButton = FlatActionPillButton(title: "Close", symbol: nil, target: self, action: #selector(closeClicked(_:)))
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        bottomView.addSubview(closeButton)
-        
-        // AutoLayout Constraints
         NSLayoutConstraint.activate([
-            // Header (avoiding traffic lights at top-left)
-            headerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
-            headerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
-            headerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            headerView.heightAnchor.constraint(equalToConstant: 44),
-            
-            headerTitle.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 1),
-            headerTitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
-            
-            headerSubtitle.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 3),
-            headerSubtitle.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
-            
-            pillBar.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
-            pillBar.trailingAnchor.constraint(equalTo: headerView.trailingAnchor),
-            
             // Cards Row
-            cardStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
-            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+            cardStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
             cardStack.heightAnchor.constraint(equalToConstant: 78),
             
-            // Table Container Card
-            tableContainer.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 14),
-            tableContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            tableContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            tableContainer.bottomAnchor.constraint(equalTo: bottomView.topAnchor, constant: -8),
+            // Inset Table ScrollView
+            scrollView.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: bottomView.topAnchor),
             
-            // ScrollView inside Table Container
-            scrollView.topAnchor.constraint(equalTo: tableContainer.contentView!.topAnchor, constant: 8),
-            scrollView.leadingAnchor.constraint(equalTo: tableContainer.contentView!.leadingAnchor, constant: 10),
-            scrollView.trailingAnchor.constraint(equalTo: tableContainer.contentView!.trailingAnchor, constant: -10),
-            scrollView.bottomAnchor.constraint(equalTo: tableContainer.contentView!.bottomAnchor, constant: -8),
+            // Empty State View centered over table area
+            emptyStateView.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            emptyStateView.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            emptyStateView.widthAnchor.constraint(equalToConstant: 340),
+            emptyStateView.heightAnchor.constraint(equalToConstant: 130),
             
-            // Empty State View (centered over table container)
-            emptyStateView.centerXAnchor.constraint(equalTo: tableContainer.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: tableContainer.centerYAnchor),
-            emptyStateView.widthAnchor.constraint(equalToConstant: 320),
-            emptyStateView.heightAnchor.constraint(equalToConstant: 120),
-            
-            // Bottom Bar
+            // Bottom Status Bar
             bottomView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             bottomView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             bottomView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            bottomView.heightAnchor.constraint(equalToConstant: 46),
+            bottomView.heightAnchor.constraint(equalToConstant: 28),
             
-            bottomSeparator.topAnchor.constraint(equalTo: bottomView.topAnchor),
-            bottomSeparator.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor),
-            bottomSeparator.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: bottomView.topAnchor),
+            separator.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor),
             
-            statusLabel.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor, constant: 24),
-            statusLabel.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: refreshButton.leadingAnchor, constant: -12),
-            
-            refreshButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -10),
-            refreshButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
-            refreshButton.heightAnchor.constraint(equalToConstant: 28),
-            refreshButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
-            
-            closeButton.trailingAnchor.constraint(equalTo: bottomView.trailingAnchor, constant: -24),
-            closeButton.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor),
-            closeButton.heightAnchor.constraint(equalToConstant: 28),
-            closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
+            statusLabel.leadingAnchor.constraint(equalTo: bottomView.leadingAnchor, constant: 18),
+            statusLabel.centerYAnchor.constraint(equalTo: bottomView.centerYAnchor)
         ])
     }
     
@@ -1050,7 +797,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         label.alignment = .center
         view.addSubview(label)
         
-        let sub = NSTextField(labelWithString: "Switch to 'Today' or 'All' in the top right to view historical records")
+        let sub = NSTextField(labelWithString: "Switch time window above or prompt in Antigravity to record tokens")
         sub.translatesAutoresizingMaskIntoConstraints = false
         sub.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         sub.textColor = .tertiaryLabelColor
@@ -1070,12 +817,19 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         return view
     }
     
+    @objc func segmentChanged(_ sender: NSSegmentedControl) {
+        if let window = TimeWindow(rawValue: sender.selectedSegment) {
+            self.currentWindow = window
+            filterAndDisplay()
+        }
+    }
+    
     func selectTimeWindow(_ index: Int) {
         guard index >= 0 && index < TimeWindow.allCases.count else { return }
-        pillBar.setSelectedIndex(index)
+        timeSegmentControl?.selectedSegment = index
         if let window = TimeWindow(rawValue: index) {
             self.currentWindow = window
-            self.filterAndDisplay()
+            filterAndDisplay()
         }
     }
     
@@ -1083,18 +837,13 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         loadData(forceRefresh: true)
     }
     
-    @objc func closeClicked(_ sender: Any?) {
-        self.window?.close()
-    }
-    
     func loadData(forceRefresh: Bool = false) {
-        // Fast path: if memory cache exists and not forced, display immediately
         if !forceRefresh && !TokenStatsManager.shared.currentRecords.isEmpty {
             self.allRecords = TokenStatsManager.shared.currentRecords
             self.filterAndDisplay()
         }
         
-        refreshButton.isEnabled = false
+        refreshButton?.isEnabled = false
         statusLabel.stringValue = "Syncing local session transcripts..."
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1103,7 +852,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.allRecords = scanned
-                self.refreshButton.isEnabled = true
+                self.refreshButton?.isEnabled = true
                 self.filterAndDisplay()
             }
         }
@@ -1113,7 +862,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         let now = Date()
         let maxSec = currentWindow.maxSeconds
         
-        // Filter records by selected time window
         let filtered: [TokenRecord]
         if let limit = maxSec {
             filtered = allRecords.filter { r in
@@ -1124,7 +872,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             filtered = allRecords
         }
         
-        // Aggregate by model
         var statsDict: [String: ModelAggregatedStats] = [:]
         var totalIn: Int64 = 0
         var totalCache: Int64 = 0
@@ -1152,7 +899,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         self.tableView.isHidden = isEmpty
         self.tableView.reloadData()
         
-        // Update Metric Cards
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         
@@ -1160,7 +906,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         let totStr = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
         totalTokensCard.update(value: totStr, sub: formatCompactNumber(totalAll) + " tokens processed")
         
-        // 2. Cache Hit Ratio
+        // 2. Cache Hit Rate
         let promptTokens = totalIn + totalCache
         if promptTokens > 0 {
             let ratio = Double(totalCache) / Double(promptTokens) * 100.0
@@ -1178,7 +924,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         let outShare = totalAll > 0 ? (Double(totalOut) / Double(totalAll) * 100.0) : 0.0
         outputCard.update(value: outStr, sub: String(format: "%.1f%% of total volume", outShare))
         
-        // 4. Total Calls
+        // 4. Total Requests
         if totalCalls > 0 {
             let avgPerCall = totalAll / Int64(totalCalls)
             totalCallsCard.update(value: "\(totalCalls)", sub: "Avg " + formatCompactNumber(avgPerCall) + " / request")
@@ -1186,7 +932,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             totalCallsCard.update(value: "0", sub: "No calls in this window")
         }
         
-        // Status bar
+        // Status Bar
         let df = DateFormatter()
         df.timeStyle = .medium
         statusLabel.stringValue = "● Scanned \(allRecords.count) sessions (\(filtered.count) in window) · Updated \(df.string(from: Date()))"
@@ -1203,7 +949,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
     }
     
     // MARK: - NSTableViewDataSource & Delegate
-    
     func numberOfRows(in tableView: NSTableView) -> Int {
         return displayedStats.count
     }
@@ -1263,41 +1008,6 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             
         default:
             return nil
-        }
-    }
-    
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        return ModernTableRowView()
-    }
-}
-
-// MARK: - Custom Views
-
-class ProgressBarView: NSView {
-    var progress: Double = 0.0 {
-        didSet { needsDisplay = true }
-    }
-    
-    var color: NSColor = .systemBlue {
-        didSet { needsDisplay = true }
-    }
-    
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        
-        // Draw Track
-        let trackPath = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-        let trackColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.2)
-        trackColor.set()
-        trackPath.fill()
-        
-        // Draw Fill
-        let fillWidth = bounds.width * CGFloat(max(0, min(1, progress)))
-        if fillWidth > 0 {
-            let fillRect = NSRect(x: 0, y: 0, width: fillWidth, height: bounds.height)
-            let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-            color.set()
-            fillPath.fill()
         }
     }
 }
