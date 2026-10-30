@@ -99,6 +99,12 @@ enum TimeWindow: Int, CaseIterable {
     }
 }
 
+struct CachedSessionRecords {
+    let modificationDate: Date
+    let fileSize: Int64
+    let records: [TokenRecord]
+}
+
 class TokenStatsManager {
     static let shared = TokenStatsManager()
     
@@ -110,9 +116,17 @@ class TokenStatsManager {
         homeDir.appendingPathComponent(".gemini/antigravity-cli/conversations")
     }
     
+    private let lock = NSLock()
+    
+    // Level 1: Global in-memory cache of all combined records
     private var memoryCacheRecords: [TokenRecord] = []
-    private var modelMapCache: [String: [Int: String]] = [:]
     private var lastScanTime: Date? = nil
+    
+    // Level 2: Per-session incremental cache (mtime + fileSize -> records)
+    private var sessionCache: [String: CachedSessionRecords] = [:]
+    
+    // Level 3: SQLite model mapping cache (convId -> [idx: modelName])
+    private var modelMapCache: [String: [Int: String]] = [:]
     
     private let isoDateFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -127,6 +141,8 @@ class TokenStatsManager {
     }()
     
     var currentRecords: [TokenRecord] {
+        lock.lock()
+        defer { lock.unlock() }
         return memoryCacheRecords
     }
     
@@ -136,29 +152,48 @@ class TokenStatsManager {
     }
     
     func scanAllRecords(forceRefresh: Bool = false) -> [TokenRecord] {
-        if !forceRefresh, !memoryCacheRecords.isEmpty, let last = lastScanTime, Date().timeIntervalSince(last) < 20.0 {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        // Level 1: Memory cache short-circuit for rapid UI queries
+        if !forceRefresh, !memoryCacheRecords.isEmpty, let last = lastScanTime, Date().timeIntervalSince(last) < 15.0 {
             return memoryCacheRecords
         }
         
         var records: [TokenRecord] = []
         let fileManager = FileManager.default
         guard let dbFiles = try? fileManager.contentsOfDirectory(at: convDir, includingPropertiesForKeys: nil) else {
-            return []
+            return memoryCacheRecords
         }
         
         for dbURL in dbFiles where dbURL.pathExtension == "db" {
             let convId = dbURL.deletingPathExtension().lastPathComponent
             let transcriptURL = brainDir.appendingPathComponent(convId).appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            guard fileManager.fileExists(atPath: transcriptURL.path) else { continue }
             
-            let modelMap = getModelMap(for: convId, dbURL: dbURL)
+            // Check file attributes for incremental cache
+            guard let attrs = try? fileManager.attributesOfItem(atPath: transcriptURL.path),
+                  let mtime = attrs[.modificationDate] as? Date,
+                  let size = (attrs[.size] as? NSNumber)?.int64Value else {
+                continue
+            }
+            
+            // Level 2 cache hit: file has not been modified since last parse
+            if let cached = sessionCache[convId], cached.modificationDate == mtime && cached.fileSize == size {
+                records.append(contentsOf: cached.records)
+                continue
+            }
+            
+            // Level 2 cache miss: parse transcript.jsonl
             guard let fileHandle = try? FileHandle(forReadingFrom: transcriptURL) else { continue }
             defer { try? fileHandle.close() }
             
             let data = fileHandle.readDataToEndOfFile()
             guard let content = String(data: data, encoding: .utf8) else { continue }
             
+            let modelMap = getModelMap(for: convId, dbURL: dbURL)
+            var sessionRecords: [TokenRecord] = []
             var genIdx = 0
+            
             content.enumerateLines { [weak self] line, _ in
                 guard line.contains("\"PLANNER_RESPONSE\"") else { return }
                 guard let lineData = line.data(using: .utf8),
@@ -173,7 +208,7 @@ class TokenStatsManager {
                 
                 if let input = input {
                     let modelName = modelMap[genIdx] ?? (modelMap.values.first ?? "Gemini 3.8 Flash (Medium)")
-                    records.append(TokenRecord(
+                    sessionRecords.append(TokenRecord(
                         modelName: modelName,
                         inputTokens: input,
                         cacheReadTokens: cache,
@@ -183,6 +218,10 @@ class TokenStatsManager {
                 }
                 genIdx += 1
             }
+            
+            // Store in per-session incremental cache
+            sessionCache[convId] = CachedSessionRecords(modificationDate: mtime, fileSize: size, records: sessionRecords)
+            records.append(contentsOf: sessionRecords)
         }
         
         self.memoryCacheRecords = records
