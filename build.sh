@@ -7,8 +7,9 @@ echo "Cleaning up old build..."
 rm -rf "$DIR/AgyUsage" "$DIR/Agy Usage.app"
 
 echo "Compiling AgyUsage..."
-# Compile Swift code using optimization and the macosx SDK
-swiftc -O -sdk "$(xcrun --show-sdk-path --sdk macosx)" "$DIR/main.swift" -o "$DIR/AgyUsage"
+# Compile modular Swift code using optimization and the macosx SDK
+SWIFT_FILES=$(find "$DIR/Sources" -name "*.swift")
+swiftc -O -sdk "$(xcrun --show-sdk-path --sdk macosx)" $SWIFT_FILES -o "$DIR/AgyUsage"
 
 echo "Creating App Bundle structure..."
 mkdir -p "$DIR/Agy Usage.app/Contents/MacOS"
