@@ -80,11 +80,11 @@ enum TimeWindow: Int, CaseIterable {
     
     var title: String {
         switch self {
-        case .fiveHours: return "5 小时"
-        case .today: return "当天"
-        case .sevenDays: return "7 天"
-        case .thirtyDays: return "30 天"
-        case .allTime: return "全部"
+        case .fiveHours: return "5 Hours"
+        case .today: return "Today"
+        case .sevenDays: return "7 Days"
+        case .thirtyDays: return "30 Days"
+        case .allTime: return "All"
         }
     }
     
@@ -251,6 +251,8 @@ class TokenStatsManager {
 class CapsulePillBar: NSView {
     var onSelectionChanged: ((Int) -> Void)?
     private var buttons: [NSButton] = []
+    private let indicatorView = NSBox()
+    private let stack = NSStackView()
     private(set) var selectedIndex: Int = 0
     
     init(items: [String]) {
@@ -264,9 +266,16 @@ class CapsulePillBar: NSView {
         layer?.cornerRadius = 10
         layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
         
-        let stack = NSStackView()
+        // Single sliding elevated card indicator
+        indicatorView.boxType = .custom
+        indicatorView.cornerRadius = 7
+        indicatorView.borderWidth = 0
+        indicatorView.translatesAutoresizingMaskIntoConstraints = true
+        addSubview(indicatorView)
+        
         stack.orientation = .horizontal
-        stack.spacing = 3
+        stack.distribution = .fillEqually
+        stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         
@@ -282,19 +291,18 @@ class CapsulePillBar: NSView {
             let btn = NSButton(title: item, target: self, action: #selector(btnClicked(_:)))
             btn.tag = i
             btn.isBordered = false
-            btn.wantsLayer = true
-            btn.layer?.cornerRadius = 7
+            btn.alignment = .center
             btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
             buttons.append(btn)
             stack.addArrangedSubview(btn)
-            btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 62).isActive = true
+            btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
         }
-        updateButtonStyles()
+        updateIndicator()
     }
     
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        updateButtonStyles()
+        updateIndicator()
     }
     
     @objc private func btnClicked(_ sender: NSButton) {
@@ -305,59 +313,97 @@ class CapsulePillBar: NSView {
     func setSelectedIndex(_ index: Int) {
         guard index >= 0 && index < buttons.count else { return }
         selectedIndex = index
-        updateButtonStyles()
+        updateIndicator()
     }
     
-    private func updateButtonStyles() {
+    override func layout() {
+        super.layout()
+        updateIndicatorFrame()
+    }
+    
+    private func updateIndicatorFrame() {
+        guard selectedIndex >= 0 && selectedIndex < buttons.count else { return }
+        let targetBtn = buttons[selectedIndex]
+        indicatorView.frame = targetBtn.frame.offsetBy(dx: 3, dy: 3)
+    }
+    
+    private func updateIndicator() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        indicatorView.fillColor = isDark ? NSColor(white: 0.28, alpha: 1.0) : NSColor.white
+        indicatorView.shadow = {
+            let s = NSShadow()
+            s.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.35 : 0.08)
+            s.shadowOffset = NSSize(width: 0, height: -1)
+            s.shadowBlurRadius = 2.0
+            return s
+        }()
+        
         for (i, btn) in buttons.enumerated() {
             let isSel = (i == selectedIndex)
-            if isSel {
-                btn.layer?.backgroundColor = isDark
-                    ? NSColor(white: 0.28, alpha: 1.0).cgColor
-                    : NSColor.white.cgColor
-                btn.contentTintColor = .labelColor
-                btn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-                btn.layer?.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.35 : 0.08).cgColor
-                btn.layer?.shadowOpacity = 1.0
-                btn.layer?.shadowOffset = CGSize(width: 0, height: 1)
-                btn.layer?.shadowRadius = 2.0
-            } else {
-                btn.layer?.backgroundColor = NSColor.clear.cgColor
-                btn.contentTintColor = .secondaryLabelColor
-                btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-                btn.layer?.shadowOpacity = 0.0
-            }
+            btn.contentTintColor = isSel ? .labelColor : .secondaryLabelColor
+            btn.font = NSFont.systemFont(ofSize: 13, weight: isSel ? .semibold : .medium)
         }
+        updateIndicatorFrame()
     }
 }
 
-class FlatActionPillButton: NSButton {
-    var isPrimary: Bool = false {
-        didSet { updateAppearance() }
+class FlatActionPillButton: NSControl {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let iconView = NSImageView()
+    private let contentStack = NSStackView()
+    private var isHovered = false
+    private var isPressed = false
+    
+    var title: String = "" {
+        didSet { titleLabel.stringValue = title }
     }
     
-    init(title: String, symbol: String? = nil, isPrimary: Bool = false, target: AnyObject?, action: Selector?) {
+    override var isEnabled: Bool {
+        didSet {
+            alphaValue = isEnabled ? 1.0 : 0.5
+            updateAppearance()
+        }
+    }
+    
+    init(title: String, symbol: String? = nil, target: AnyObject?, action: Selector?) {
         super.init(frame: .zero)
-        self.isPrimary = isPrimary
         self.target = target
         self.action = action
-        self.isBordered = false
-        self.wantsLayer = true
-        self.layer?.cornerRadius = 8
-        self.font = NSFont.systemFont(ofSize: 13, weight: isPrimary ? .semibold : .medium)
+        self.title = title
+        setup(title: title, symbol: symbol)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    
+    private func setup(title: String, symbol: String?) {
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .centerY
+        contentStack.spacing = 6
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentStack)
         
         if let sym = symbol {
             let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-            self.image = NSImage(systemSymbolName: sym, accessibilityDescription: title)?.withSymbolConfiguration(config)
-            self.imagePosition = .imageLeading
-            self.title = "  " + title
-        } else {
-            self.title = title
+            iconView.image = NSImage(systemSymbolName: sym, accessibilityDescription: title)?.withSymbolConfiguration(config)
+            iconView.contentTintColor = .secondaryLabelColor
+            contentStack.addArrangedSubview(iconView)
         }
+        
+        titleLabel.stringValue = title
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
+        contentStack.addArrangedSubview(titleLabel)
+        
+        NSLayoutConstraint.activate([
+            contentStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(equalToConstant: 30)
+        ])
+        
         updateAppearance()
     }
-    required init?(coder: NSCoder) { fatalError() }
     
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -365,15 +411,29 @@ class FlatActionPillButton: NSButton {
     }
     
     private func updateAppearance() {
-        if isPrimary {
-            layer?.backgroundColor = NSColor.systemBlue.cgColor
-            contentTintColor = .white
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isPressed {
+            layer?.backgroundColor = isDark ? NSColor(white: 0.32, alpha: 1.0).cgColor : NSColor(white: 0.82, alpha: 1.0).cgColor
+        } else if isHovered {
+            layer?.backgroundColor = isDark ? NSColor(white: 0.26, alpha: 1.0).cgColor : NSColor(white: 0.88, alpha: 1.0).cgColor
         } else {
-            let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            layer?.backgroundColor = isDark
-                ? NSColor(white: 0.22, alpha: 1.0).cgColor
-                : NSColor(white: 0.92, alpha: 1.0).cgColor
-            contentTintColor = .labelColor
+            layer?.backgroundColor = isDark ? NSColor(white: 0.22, alpha: 1.0).cgColor : NSColor(white: 0.92, alpha: 1.0).cgColor
+        }
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = true
+        updateAppearance()
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = false
+        updateAppearance()
+        let pt = convert(event.locationInWindow, from: nil)
+        if bounds.contains(pt) {
+            sendAction(action, to: target)
         }
     }
 }
@@ -401,11 +461,11 @@ class FlatTableHeaderCell: NSTableHeaderCell {
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = self.alignment
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: pStyle
         ]
-        let inset = NSRect(x: cellFrame.origin.x, y: cellFrame.origin.y + 7, width: cellFrame.width - 4, height: cellFrame.height - 7)
+        let inset = NSRect(x: cellFrame.origin.x, y: cellFrame.origin.y + 6, width: cellFrame.width - 4, height: cellFrame.height - 6)
         text.draw(in: inset, withAttributes: attrs)
     }
 }
@@ -450,24 +510,24 @@ class MetricCardView: NSView {
         addSubview(container)
         
         dotView.boxType = .custom
-        dotView.cornerRadius = 3.5
+        dotView.cornerRadius = 4.0
         dotView.fillColor = tint
         dotView.borderWidth = 0
         dotView.translatesAutoresizingMaskIntoConstraints = false
         container.contentView?.addSubview(dotView)
         
         titleLabel.stringValue = title
-        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = .secondaryLabelColor
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         container.contentView?.addSubview(titleLabel)
         
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .bold)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 22, weight: .bold)
         valueLabel.textColor = .labelColor
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         container.contentView?.addSubview(valueLabel)
         
-        subLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        subLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         subLabel.textColor = .tertiaryLabelColor
         subLabel.translatesAutoresizingMaskIntoConstraints = false
         container.contentView?.addSubview(subLabel)
@@ -480,8 +540,8 @@ class MetricCardView: NSView {
             
             dotView.leadingAnchor.constraint(equalTo: container.contentView!.leadingAnchor, constant: 14),
             dotView.topAnchor.constraint(equalTo: container.contentView!.topAnchor, constant: 12),
-            dotView.widthAnchor.constraint(equalToConstant: 7),
-            dotView.heightAnchor.constraint(equalToConstant: 7),
+            dotView.widthAnchor.constraint(equalToConstant: 8),
+            dotView.heightAnchor.constraint(equalToConstant: 8),
             
             titleLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 7),
             titleLabel.centerYAnchor.constraint(equalTo: dotView.centerYAnchor),
@@ -780,15 +840,15 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         headerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(headerView)
         
-        let headerTitle = NSTextField(labelWithString: "Token 用量分析")
+        let headerTitle = NSTextField(labelWithString: "Token Analytics")
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
+        headerTitle.font = NSFont.systemFont(ofSize: 18, weight: .bold)
         headerTitle.textColor = .labelColor
         headerView.addSubview(headerTitle)
         
-        let headerSubtitle = NSTextField(labelWithString: "Antigravity 智能体代码辅助统计与 Prompt 缓存分析")
+        let headerSubtitle = NSTextField(labelWithString: "Antigravity Assistant Token Usage & Prompt Cache Analytics")
         headerSubtitle.translatesAutoresizingMaskIntoConstraints = false
-        headerSubtitle.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        headerSubtitle.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         headerSubtitle.textColor = .secondaryLabelColor
         headerView.addSubview(headerSubtitle)
         
@@ -811,10 +871,10 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         cardStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(cardStack)
         
-        totalTokensCard = MetricCardView(title: "总处理 Token", tint: .systemBlue)
-        cacheRatioCard = MetricCardView(title: "缓存命中率", tint: .systemGreen)
-        outputCard = MetricCardView(title: "模型生成输出", tint: .systemPurple)
-        totalCallsCard = MetricCardView(title: "调用总次数", tint: .systemOrange)
+        totalTokensCard = MetricCardView(title: "Total Tokens", tint: .systemBlue)
+        cacheRatioCard = MetricCardView(title: "Cache Hit Rate", tint: .systemGreen)
+        outputCard = MetricCardView(title: "Output Tokens", tint: .systemPurple)
+        totalCallsCard = MetricCardView(title: "Total Requests", tint: .systemOrange)
         
         cardStack.addArrangedSubview(totalTokensCard)
         cardStack.addArrangedSubview(cacheRatioCard)
@@ -854,13 +914,13 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         tableView.headerView = modernHeader
         
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "模型 (Model)", 190, 140, .left),
-            ("calls", "调用", 48, 40, .right),
-            ("input", "输入", 72, 58, .right),
-            ("cache", "Prompt 缓存", 140, 110, .right),
-            ("output", "输出", 72, 58, .right),
-            ("total", "总消耗", 88, 68, .right),
-            ("share", "占比", 95, 78, .right)
+            ("model", "Model", 215, 160, .left),
+            ("calls", "Requests", 60, 45, .right),
+            ("input", "Input", 65, 50, .right),
+            ("cache", "Prompt Cache", 125, 95, .right),
+            ("output", "Output", 65, 50, .right),
+            ("total", "Total Tokens", 85, 65, .right),
+            ("share", "Share", 80, 60, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -893,17 +953,17 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
         bottomView.addSubview(bottomSeparator)
         
-        statusLabel = NSTextField(labelWithString: "准备就绪")
+        statusLabel = NSTextField(labelWithString: "Ready")
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.font = NSFont.systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         bottomView.addSubview(statusLabel)
         
-        refreshButton = FlatActionPillButton(title: "刷新数据", symbol: "arrow.clockwise", isPrimary: false, target: self, action: #selector(refreshClicked(_:)))
+        refreshButton = FlatActionPillButton(title: "Refresh", symbol: "arrow.clockwise", target: self, action: #selector(refreshClicked(_:)))
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
         bottomView.addSubview(refreshButton)
         
-        closeButton = FlatActionPillButton(title: "关闭", symbol: nil, isPrimary: false, target: self, action: #selector(closeClicked(_:)))
+        closeButton = FlatActionPillButton(title: "Close", symbol: nil, target: self, action: #selector(closeClicked(_:)))
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         bottomView.addSubview(closeButton)
         
@@ -978,21 +1038,21 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         let view = NSView()
         let icon = NSImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
-        let config = NSImage.SymbolConfiguration(pointSize: 28, weight: .light)
+        let config = NSImage.SymbolConfiguration(pointSize: 32, weight: .light)
         icon.image = NSImage(systemSymbolName: "tray", accessibilityDescription: "Empty")?.withSymbolConfiguration(config)
         icon.contentTintColor = .tertiaryLabelColor
         view.addSubview(icon)
         
-        let label = NSTextField(labelWithString: "该时间窗口内暂无 Token 调用记录")
+        let label = NSTextField(labelWithString: "No Token Activity Recorded")
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
         label.textColor = .secondaryLabelColor
         label.alignment = .center
         view.addSubview(label)
         
-        let sub = NSTextField(labelWithString: "可在右上角切换到「当天」或「全部」查看历史数据")
+        let sub = NSTextField(labelWithString: "Switch to 'Today' or 'All' in the top right to view historical records")
         sub.translatesAutoresizingMaskIntoConstraints = false
-        sub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        sub.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         sub.textColor = .tertiaryLabelColor
         sub.alignment = .center
         view.addSubview(sub)
@@ -1035,7 +1095,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         
         refreshButton.isEnabled = false
-        statusLabel.stringValue = "正在同步本地对话数据..."
+        statusLabel.stringValue = "Syncing local session transcripts..."
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let scanned = TokenStatsManager.shared.scanAllRecords(forceRefresh: forceRefresh)
@@ -1098,7 +1158,7 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
         
         // 1. Total Tokens
         let totStr = formatter.string(from: NSNumber(value: totalAll)) ?? "\(totalAll)"
-        totalTokensCard.update(value: totStr, sub: formatCompactNumber(totalAll) + " tokens 处理总量")
+        totalTokensCard.update(value: totStr, sub: formatCompactNumber(totalAll) + " tokens processed")
         
         // 2. Cache Hit Ratio
         let promptTokens = totalIn + totalCache
@@ -1106,30 +1166,30 @@ class TokenStatsWindowController: NSWindowController, NSTableViewDataSource, NST
             let ratio = Double(totalCache) / Double(promptTokens) * 100.0
             cacheRatioCard.update(
                 value: String(format: "%.1f%%", ratio),
-                sub: "省下 " + formatCompactNumber(totalCache) + " tokens 缓存",
+                sub: "Saved " + formatCompactNumber(totalCache) + " cached tokens",
                 valueColor: .systemGreen
             )
         } else {
-            cacheRatioCard.update(value: "0.0%", sub: "无 Prompt 缓存", valueColor: .labelColor)
+            cacheRatioCard.update(value: "0.0%", sub: "No prompt cache", valueColor: .labelColor)
         }
         
         // 3. Output Tokens
         let outStr = formatter.string(from: NSNumber(value: totalOut)) ?? "\(totalOut)"
         let outShare = totalAll > 0 ? (Double(totalOut) / Double(totalAll) * 100.0) : 0.0
-        outputCard.update(value: outStr, sub: String(format: "占总用量 %.1f%%", outShare))
+        outputCard.update(value: outStr, sub: String(format: "%.1f%% of total volume", outShare))
         
         // 4. Total Calls
         if totalCalls > 0 {
             let avgPerCall = totalAll / Int64(totalCalls)
-            totalCallsCard.update(value: "\(totalCalls) 次", sub: "均次 " + formatCompactNumber(avgPerCall) + " tokens")
+            totalCallsCard.update(value: "\(totalCalls)", sub: "Avg " + formatCompactNumber(avgPerCall) + " / request")
         } else {
-            totalCallsCard.update(value: "0 次", sub: "当前窗口暂无调用")
+            totalCallsCard.update(value: "0", sub: "No calls in this window")
         }
         
         // Status bar
         let df = DateFormatter()
         df.timeStyle = .medium
-        statusLabel.stringValue = "● 已扫描 \(allRecords.count) 条历史记录 (当前窗口: \(filtered.count) 条) · 上次更新: \(df.string(from: Date()))"
+        statusLabel.stringValue = "● Scanned \(allRecords.count) sessions (\(filtered.count) in window) · Updated \(df.string(from: Date()))"
     }
     
     private func formatCompactNumber(_ n: Int64) -> String {
