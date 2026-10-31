@@ -205,7 +205,7 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             cardStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
             cardStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             cardStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            cardStack.heightAnchor.constraint(equalToConstant: 74),
+            cardStack.heightAnchor.constraint(equalToConstant: 80),
             
             // Rounded Table Container
             tableContainer.topAnchor.constraint(equalTo: cardStack.bottomAnchor, constant: 12),

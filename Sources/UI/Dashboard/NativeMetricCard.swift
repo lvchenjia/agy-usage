@@ -49,28 +49,33 @@ class NativeMetricCard: NSView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
         
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 26, weight: .bold)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .bold)
         valueLabel.textColor = .labelColor
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        valueLabel.maximumNumberOfLines = 1
+        valueLabel.cell?.wraps = false
+        valueLabel.cell?.isScrollable = false
+        valueLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        valueLabel.setContentHuggingPriority(.required, for: .vertical)
         addSubview(valueLabel)
         
         NSLayoutConstraint.activate([
             // Icon Badge Top Right
-            iconBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            iconBadge.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            iconBadge.widthAnchor.constraint(equalToConstant: 30),
-            iconBadge.heightAnchor.constraint(equalToConstant: 30),
+            iconBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            iconBadge.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            iconBadge.widthAnchor.constraint(equalToConstant: 28),
+            iconBadge.heightAnchor.constraint(equalToConstant: 28),
             
             // Title Top Left
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: iconBadge.leadingAnchor, constant: -8),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: iconBadge.leadingAnchor, constant: -6),
             
             // Value Bottom Left
             valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
-            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
-            valueLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14)
+            valueLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            valueLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -10)
         ])
     }
     
