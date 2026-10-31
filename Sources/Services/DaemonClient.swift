@@ -50,7 +50,7 @@ class DaemonClient {
             let nameLen = proc_name(pid, &buffer, UInt32(buffer.count))
             if nameLen > 0 {
                 let name = String(cString: buffer)
-                if name == targetName || name.hasSuffix("/\(targetName)") {
+                if name == targetName || name.hasSuffix("/\(targetName)") || name.contains("language_server") {
                     return true
                 }
             }
@@ -234,39 +234,61 @@ class DaemonClient {
             return [testPort]
         }
         
-        let process = Process()
-        process.launchPath = "/usr/sbin/lsof"
-        process.arguments = ["-c", "agy", "-a", "-iTCP", "-sTCP:LISTEN", "-P", "-n"]
+        var ports: [Int] = []
         
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            
+        // 1. Check ps for --https_server_port or --extension_server_port
+        let psProcess = Process()
+        psProcess.launchPath = "/bin/ps"
+        psProcess.arguments = ["-eo", "args"]
+        let psPipe = Pipe()
+        psProcess.standardOutput = psPipe
+        if let _ = try? psProcess.run() {
+            let data = psPipe.fileHandleForReading.readDataToEndOfFile()
+            psProcess.waitUntilExit()
             if let output = String(data: data, encoding: .utf8) {
-                var ports: [Int] = []
-                let lines = output.components(separatedBy: .newlines)
-                for line in lines {
-                    if line.contains("LISTEN") {
-                        let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                        if let nameCol = parts.last(where: { $0.contains(":") }) {
-                            let portStr = nameCol.components(separatedBy: ":").last ?? ""
-                            if let port = Int(portStr) {
-                                ports.append(port)
+                let portPattern = "--(?:https_server_port|extension_server_port)[=\\s]+(\\d+)"
+                if let regex = try? NSRegularExpression(pattern: portPattern) {
+                    let nsStr = output as NSString
+                    let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsStr.length))
+                    for m in matches {
+                        if let p = Int(nsStr.substring(with: m.range(at: 1))), !ports.contains(p) {
+                            ports.append(p)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 2. Discover via lsof for agy and language_server processes
+        let commandsToScan = ["agy", "language_server"]
+        for cmd in commandsToScan {
+            let process = Process()
+            process.launchPath = "/usr/sbin/lsof"
+            process.arguments = ["-c", cmd, "-a", "-iTCP", "-sTCP:LISTEN", "-P", "-n"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if let output = String(data: data, encoding: .utf8) {
+                    let lines = output.components(separatedBy: .newlines)
+                    for line in lines {
+                        if line.contains("LISTEN") {
+                            let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                            if let nameCol = parts.last(where: { $0.contains(":") }) {
+                                let portStr = nameCol.components(separatedBy: ":").last ?? ""
+                                if let port = Int(portStr), !ports.contains(port) {
+                                    ports.append(port)
+                                }
                             }
                         }
                     }
                 }
-                return ports
-            }
-        } catch {
-            return []
+            } catch {}
         }
         
-        return []
+        return ports
     }
     
     func getCsrfToken() -> String? {
@@ -275,10 +297,15 @@ class DaemonClient {
         }
         
         // 1. Try file
-        let tokenPath = "/tmp/agy_csrf_token"
-        if let content = try? String(contentsOfFile: tokenPath, encoding: .utf8) {
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
+        let candidateFiles = [
+            "/tmp/agy_csrf_token",
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity-cli/.csrf_token").path
+        ]
+        for tokenPath in candidateFiles {
+            if let content = try? String(contentsOfFile: tokenPath, encoding: .utf8) {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
         }
         
         // 2. Try ps
@@ -295,7 +322,7 @@ class DaemonClient {
             process.waitUntilExit()
             
             if let output = String(data: data, encoding: .utf8) {
-                let pattern = "--csrf_token=([a-zA-Z0-9-]+)"
+                let pattern = "--csrf_token[=\\s]+([a-zA-Z0-9-]+)"
                 if let regex = try? NSRegularExpression(pattern: pattern) {
                     let nsString = output as NSString
                     let results = regex.matches(in: output, range: NSRange(location: 0, length: nsString.length))
