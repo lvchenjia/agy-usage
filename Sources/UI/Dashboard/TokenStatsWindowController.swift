@@ -157,11 +157,12 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         tableView.delegate = self
         
         let columns: [(String, String, CGFloat, CGFloat, NSTextAlignment)] = [
-            ("model", "MODEL", 240, 180, .left),
-            ("calls", "REQUESTS", 85, 65, .right),
-            ("total", "TOKENS", 95, 75, .right),
-            ("cache", "PROMPT CACHE", 150, 120, .right),
-            ("share", "USAGE SHARE", 130, 95, .right)
+            ("model", "MODEL", 205, 150, .left),
+            ("calls", "REQUESTS", 70, 50, .right),
+            ("total", "TOKENS", 75, 60, .right),
+            ("speed", "SPEED", 85, 70, .right),
+            ("cache", "PROMPT CACHE", 130, 105, .right),
+            ("share", "USAGE SHARE", 120, 95, .right)
         ]
         
         for (colId, title, width, minW, align) in columns {
@@ -332,6 +333,7 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             item.inputTokens += r.inputTokens
             item.cacheReadTokens += r.cacheReadTokens
             item.outputTokens += r.outputTokens
+            item.totalDurationSeconds += r.durationSeconds
             statsDict[r.modelName] = item
             
             totalIn += r.inputTokens
@@ -369,7 +371,16 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
         // Status Bar
         let df = DateFormatter()
         df.timeStyle = .medium
-        statusLabel.stringValue = "● Scanned \(allRecords.count) sessions (\(filtered.count) in window) · Updated \(df.string(from: Date()))"
+        let totalOutDuration = displayedStats.reduce(0.0) { $0 + $1.totalDurationSeconds }
+        let speedSnippet: String
+        if totalOutDuration > 0.1, totalOut > 0 {
+            let overallSpeed = Double(totalOut) / totalOutDuration
+            let formatted = formatTokenSpeed(overallSpeed)
+            speedSnippet = " · Avg Speed \(formatted.value) \(formatted.unit ?? "")"
+        } else {
+            speedSnippet = ""
+        }
+        statusLabel.stringValue = "● Scanned \(allRecords.count) sessions (\(filtered.count) in window)\(speedSnippet) · Updated \(df.string(from: Date()))"
     }
     
     // MARK: - NSTableViewDataSource & Delegate
@@ -401,6 +412,12 @@ class TokenStatsWindowController: NSWindowController, NSToolbarDelegate, NSTable
             let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("TotalCell"), owner: self) as? MetricTextCellView) ?? MetricTextCellView()
             cell.identifier = NSUserInterfaceItemIdentifier("TotalCell")
             cell.configure(text: formatKMB(item.totalTokens), isBold: true)
+            return cell
+            
+        case "speed":
+            let cell = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("SpeedCell"), owner: self) as? SpeedCellView) ?? SpeedCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier("SpeedCell")
+            cell.configure(speed: item.tokenSpeed)
             return cell
             
         case "cache":

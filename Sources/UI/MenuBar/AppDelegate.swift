@@ -75,6 +75,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Command-line flag to open dashboard immediately (useful for testing and previews)
         if CommandLine.arguments.contains("--dashboard") {
             openTokenStatsDashboard(nil)
+            if let winArg = CommandLine.arguments.first(where: { $0.hasPrefix("--window=") }) {
+                let valStr = winArg.replacingOccurrences(of: "--window=", with: "")
+                if let idx = Int(valStr) {
+                    tokenStatsWindowController?.selectTimeWindow(idx)
+                }
+            }
         }
     }
     

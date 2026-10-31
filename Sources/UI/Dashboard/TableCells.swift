@@ -127,6 +127,59 @@ class MetricTextCellView: NSTableCellView {
     }
 }
 
+class SpeedCellView: NSTableCellView {
+    let stackView = NSStackView()
+    let valueLabel = NSTextField(labelWithString: "")
+    let unitLabel = NSTextField(labelWithString: "")
+    
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+    
+    private func setup() {
+        stackView.orientation = .horizontal
+        stackView.alignment = .firstBaseline
+        stackView.spacing = 3
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stackView)
+        
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        valueLabel.alignment = .right
+        valueLabel.textColor = .labelColor
+        stackView.addArrangedSubview(valueLabel)
+        
+        unitLabel.translatesAutoresizingMaskIntoConstraints = false
+        unitLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        unitLabel.textColor = .tertiaryLabelColor
+        stackView.addArrangedSubview(unitLabel)
+        
+        NSLayoutConstraint.activate([
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stackView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 4)
+        ])
+    }
+    
+    func configure(speed: Double?) {
+        let formatted = formatTokenSpeed(speed)
+        valueLabel.stringValue = formatted.value
+        if let unit = formatted.unit {
+            unitLabel.stringValue = unit
+            unitLabel.isHidden = false
+        } else {
+            unitLabel.stringValue = ""
+            unitLabel.isHidden = true
+        }
+    }
+}
+
 class CacheCellView: NSTableCellView {
     let valueLabel = NSTextField(labelWithString: "")
     let pillBadge = NSBox()

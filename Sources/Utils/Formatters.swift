@@ -27,6 +27,15 @@ func formatKMB(_ n: Int64) -> String {
     }
 }
 
+func formatTokenSpeed(_ speed: Double?) -> (value: String, unit: String?) {
+    guard let speed = speed, speed > 0 else { return ("--", nil) }
+    if speed >= 100 {
+        return (String(format: "%.0f", speed), "tok/s")
+    } else {
+        return (String(format: "%.1f", speed), "tok/s")
+    }
+}
+
 func formatResetTime(_ dateString: String?) -> String {
     guard let dateString = dateString else { return "No reset time" }
     let formatter = ISO8601DateFormatter()

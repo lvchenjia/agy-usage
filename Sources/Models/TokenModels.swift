@@ -6,6 +6,16 @@ struct TokenRecord {
     let cacheReadTokens: Int64
     let outputTokens: Int64
     let timestamp: Date?
+    let durationSeconds: Double
+    
+    init(modelName: String, inputTokens: Int64, cacheReadTokens: Int64, outputTokens: Int64, timestamp: Date?, durationSeconds: Double = 0.0) {
+        self.modelName = modelName
+        self.inputTokens = inputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.outputTokens = outputTokens
+        self.timestamp = timestamp
+        self.durationSeconds = durationSeconds
+    }
     
     var totalTokens: Int64 {
         return inputTokens + cacheReadTokens + outputTokens
@@ -18,6 +28,7 @@ struct ModelAggregatedStats {
     var inputTokens: Int64 = 0
     var cacheReadTokens: Int64 = 0
     var outputTokens: Int64 = 0
+    var totalDurationSeconds: Double = 0.0
     
     var totalTokens: Int64 {
         return inputTokens + cacheReadTokens + outputTokens
@@ -27,6 +38,11 @@ struct ModelAggregatedStats {
         let promptTokens = inputTokens + cacheReadTokens
         guard promptTokens > 0 else { return 0.0 }
         return Double(cacheReadTokens) / Double(promptTokens) * 100.0
+    }
+    
+    var tokenSpeed: Double? {
+        guard totalDurationSeconds > 0.05, outputTokens > 0 else { return nil }
+        return Double(outputTokens) / totalDurationSeconds
     }
 }
 

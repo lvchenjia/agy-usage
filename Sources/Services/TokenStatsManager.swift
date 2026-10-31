@@ -21,8 +21,12 @@ class TokenStatsManager {
     // Level 2: Per-session incremental cache (mtime + fileSize -> records)
     private var sessionCache: [String: CachedSessionRecords] = [:]
     
-    // Level 3: SQLite model mapping cache (convId -> [idx: modelName])
-    private var modelMapCache: [String: [Int: String]] = [:]
+    // Level 3: SQLite session metadata cache (convId -> SessionMetadata)
+    private struct SessionMetadata {
+        let modelMap: [Int: String]
+        let stepDurations: [Int: Double]
+    }
+    private var sessionMetaCache: [String: SessionMetadata] = [:]
     
     private let isoDateFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -86,7 +90,9 @@ class TokenStatsManager {
             let data = fileHandle.readDataToEndOfFile()
             guard let content = String(data: data, encoding: .utf8) else { continue }
             
-            let modelMap = getModelMap(for: convId, dbURL: dbURL)
+            let meta = getSessionMetadata(for: convId, dbURL: dbURL)
+            let modelMap = meta.modelMap
+            let stepDurations = meta.stepDurations
             var sessionRecords: [TokenRecord] = []
             var genIdx = 0
             
@@ -101,6 +107,8 @@ class TokenStatsManager {
                 let output = (json["output_tokens"] as? NSNumber)?.int64Value ?? 0
                 let createdAtStr = json["created_at"] as? String
                 let date = self?.parseDate(createdAtStr)
+                let stepIndex = (json["step_index"] as? NSNumber)?.intValue
+                let duration = stepIndex.flatMap { stepDurations[$0] } ?? 0.0
                 
                 if let input = input {
                     let modelName = modelMap[genIdx] ?? (modelMap.values.first ?? "Gemini 3.8 Flash (Medium)")
@@ -109,7 +117,8 @@ class TokenStatsManager {
                         inputTokens: input,
                         cacheReadTokens: cache,
                         outputTokens: output,
-                        timestamp: date
+                        timestamp: date,
+                        durationSeconds: duration
                     ))
                 }
                 genIdx += 1
@@ -140,35 +149,124 @@ class TokenStatsManager {
         ("Gemini 4 Argon".data(using: .utf8)!, "Gemini 4 Argon")
     ]
     
-    private func getModelMap(for convId: String, dbURL: URL) -> [Int: String] {
-        if let cached = modelMapCache[convId] {
+    private func getSessionMetadata(for convId: String, dbURL: URL) -> SessionMetadata {
+        if let cached = sessionMetaCache[convId] {
             return cached
         }
-        let map = loadModelMap(from: dbURL)
-        modelMapCache[convId] = map
-        return map
+        let meta = loadSessionMetadata(from: dbURL)
+        sessionMetaCache[convId] = meta
+        return meta
     }
     
-    private func loadModelMap(from dbURL: URL) -> [Int: String] {
-        var map: [Int: String] = [:]
+    private func loadSessionMetadata(from dbURL: URL) -> SessionMetadata {
+        var modelMap: [Int: String] = [:]
+        var stepDurations: [Int: Double] = [:]
+        
         var db: OpaquePointer?
         if sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK {
-            var stmt: OpaquePointer?
-            let query = "SELECT idx, data FROM gen_metadata ORDER BY idx"
-            if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    let idx = Int(sqlite3_column_int(stmt, 0))
-                    if let blobPtr = sqlite3_column_blob(stmt, 1) {
-                        let bytes = Int(sqlite3_column_bytes(stmt, 1))
+            // 1. Model Mapping
+            var stmtModel: OpaquePointer?
+            let queryModel = "SELECT idx, data FROM gen_metadata ORDER BY idx"
+            if sqlite3_prepare_v2(db, queryModel, -1, &stmtModel, nil) == SQLITE_OK {
+                while sqlite3_step(stmtModel) == SQLITE_ROW {
+                    let idx = Int(sqlite3_column_int(stmtModel, 0))
+                    if let blobPtr = sqlite3_column_blob(stmtModel, 1) {
+                        let bytes = Int(sqlite3_column_bytes(stmtModel, 1))
                         let d = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: blobPtr), count: bytes, deallocator: .none)
-                        map[idx] = extractModelName(from: d)
+                        modelMap[idx] = extractModelName(from: d)
                     }
                 }
-                sqlite3_finalize(stmt)
+                sqlite3_finalize(stmtModel)
             }
+            
+            // 2. Step Durations
+            var stmtSteps: OpaquePointer?
+            let querySteps = "SELECT idx, metadata FROM steps WHERE step_type = 15 ORDER BY idx"
+            if sqlite3_prepare_v2(db, querySteps, -1, &stmtSteps, nil) == SQLITE_OK {
+                while sqlite3_step(stmtSteps) == SQLITE_ROW {
+                    let idx = Int(sqlite3_column_int(stmtSteps, 0))
+                    if let blobPtr = sqlite3_column_blob(stmtSteps, 1) {
+                        let bytes = Int(sqlite3_column_bytes(stmtSteps, 1))
+                        let d = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: blobPtr), count: bytes, deallocator: .none)
+                        let dur = TokenStatsManager.parseStepDuration(from: d)
+                        if dur > 0 {
+                            stepDurations[idx] = dur
+                        }
+                    }
+                }
+                sqlite3_finalize(stmtSteps)
+            }
+            
             sqlite3_close(db)
         }
-        return map
+        return SessionMetadata(modelMap: modelMap, stepDurations: stepDurations)
+    }
+    
+    private static func decodeVarint(_ bytes: [UInt8], from index: inout Int) -> UInt64 {
+        var val: UInt64 = 0
+        var shift: UInt64 = 0
+        while index < bytes.count {
+            let b = bytes[index]
+            index += 1
+            val |= UInt64(b & 0x7F) << shift
+            shift += 7
+            if (b & 0x80) == 0 { break }
+        }
+        return val
+    }
+    
+    private static func decodeTimestamp(_ bytes: [UInt8]) -> Double? {
+        var idx = 0
+        var seconds: Double? = nil
+        var nanos: Double = 0.0
+        while idx < bytes.count {
+            let tagByte = bytes[idx]
+            idx += 1
+            let fieldNum = tagByte >> 3
+            let val = decodeVarint(bytes, from: &idx)
+            if fieldNum == 1 {
+                seconds = Double(val)
+            } else if fieldNum == 2 {
+                nanos = Double(val)
+            }
+        }
+        if let s = seconds {
+            return s + (nanos / 1_000_000_000.0)
+        }
+        return nil
+    }
+    
+    private static func parseStepDuration(from data: Data) -> Double {
+        let bytes = [UInt8](data)
+        var idx = 0
+        var tCreate: Double? = nil
+        var tFinish: Double? = nil
+        
+        while idx < bytes.count {
+            let key = decodeVarint(bytes, from: &idx)
+            let fieldNum = key >> 3
+            let wireType = key & 7
+            if wireType == 0 {
+                _ = decodeVarint(bytes, from: &idx)
+            } else if wireType == 2 {
+                let length = Int(decodeVarint(bytes, from: &idx))
+                let end = min(idx + length, bytes.count)
+                let sub = Array(bytes[idx..<end])
+                idx = end
+                if fieldNum == 1 {
+                    tCreate = decodeTimestamp(sub)
+                } else if fieldNum == 7 {
+                    tFinish = decodeTimestamp(sub)
+                }
+            } else {
+                break
+            }
+        }
+        
+        if let tc = tCreate, let tf = tFinish, tf >= tc {
+            return tf - tc
+        }
+        return 0.0
     }
     
     private func extractModelName(from data: Data) -> String {
