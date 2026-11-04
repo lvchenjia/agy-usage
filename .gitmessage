@@ -1,0 +1,10 @@
+# <type>(<scope>): <subject (max 72 chars)>
+# ----------------------------------------------------------------------
+# Types: feat, fix, perf, refactor, docs, style, test, build, chore
+# Scopes: menubar, menu, dashboard, remote, quota, tokens, build
+#
+# Why: Explain why this change is necessary or what problem it solves.
+#
+# What/How: Summary of key technical changes or implementation details.
+#
+# Footers: Closes #123, BREAKING CHANGE: ...
